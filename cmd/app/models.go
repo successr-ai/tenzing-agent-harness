@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"go.yaml.in/yaml/v3"
 
-	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
+	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
 
 // Custom model entries default to a 128k context window and 32k max output

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core/tooldef"
 )
 
 func TestREPLToolExecute(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 // A gate error blocks the tool call; its message is fed back to the model

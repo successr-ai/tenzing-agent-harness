@@ -20,7 +20,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 // toolListCacheTTL bounds how often CurrentTools re-polls a server's tool

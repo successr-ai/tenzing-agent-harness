@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 type toolResultOptions struct {

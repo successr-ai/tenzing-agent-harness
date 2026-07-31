@@ -8,7 +8,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 // Policy maps tool names (exact, matched case-insensitively) to decisions.

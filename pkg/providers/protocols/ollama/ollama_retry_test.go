@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 )
 
 // newRetryTestOllama returns a retrying client whose first reject429 requests

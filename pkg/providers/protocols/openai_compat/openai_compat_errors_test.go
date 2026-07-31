@@ -9,7 +9,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // newErrorTestCompat builds a non-retrying compat client against a server

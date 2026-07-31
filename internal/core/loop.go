@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 const logOutputMaxLen = 2000

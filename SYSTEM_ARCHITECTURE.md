@@ -10,7 +10,7 @@ The single architecture document for `tenzing-agent-harness`: the conceptual mod
 
 **Core technologies:** Go stdlib, the in-repo provider layer (`pkg/common` canonical types, `pkg/providers/protocols/` protocol clients over the Anthropic/OpenAI SDKs, `pkg/models` catalog), MCP Go SDK (`internal/features/mcp`), a sandboxed Python subprocess (`internal/features/blackboard/repl.go` + `bootstrap.py`).
 
-Go module: `github.com/tab58/tenzing-agent-harness` (go 1.25.9)
+Go module: `github.com/successr-ai/tenzing-agent-harness` (go 1.25.9)
 
 ## 2. The Layer Model
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 var testTime = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)

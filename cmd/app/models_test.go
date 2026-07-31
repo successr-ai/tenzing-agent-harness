@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
-	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
+	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
 
 func writeModelsFile(t *testing.T, content string) string {

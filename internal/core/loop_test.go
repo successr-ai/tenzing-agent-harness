@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // --- fakes ----------------------------------------------------------------

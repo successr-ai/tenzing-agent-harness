@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
-	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
-	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/builtins"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/reminders"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness/runner"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // ---------------------------------------------------------------------------

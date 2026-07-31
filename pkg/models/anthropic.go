@@ -2,7 +2,7 @@ package models
 
 import (
 	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // Every model on https://platform.claude.com/docs/en/about-claude/models/overview

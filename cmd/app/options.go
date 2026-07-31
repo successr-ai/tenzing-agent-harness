@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // cliConfig holds every flag value after cobra parsing and env merging.

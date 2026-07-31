@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore/compressor"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/contextstore/compressor"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // placeholderOutput is used for tool_use ids that never received a matching

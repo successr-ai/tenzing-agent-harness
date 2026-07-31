@@ -1,6 +1,6 @@
 package eventbus
 
-import "github.com/tab58/tenzing-agent-harness/internal/core"
+import "github.com/successr-ai/tenzing-agent-harness/internal/core"
 
 // Hooks holds optional typed callback functions, one per event type.
 // Set only the hooks you care about; nil hooks are silently skipped.

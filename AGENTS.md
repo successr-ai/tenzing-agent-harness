@@ -1,6 +1,6 @@
 # Agent Guidelines — tenzing-agent-harness
 
-Go module: `github.com/tab58/tenzing-agent-harness`
+Go module: `github.com/successr-ai/tenzing-agent-harness`
 
 ## Key Docs
 
@@ -22,9 +22,9 @@ No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring wo
 
 ## Module & Imports
 
-- Module path: `github.com/tab58/tenzing-agent-harness`
+- Module path: `github.com/successr-ai/tenzing-agent-harness`
 - Use short import aliases only when needed to disambiguate
-- Internal packages import via `github.com/tab58/tenzing-agent-harness/internal/...`
+- Internal packages import via `github.com/successr-ai/tenzing-agent-harness/internal/...`
 
 ## Layer Boundaries
 

@@ -1,6 +1,6 @@
 package models
 
-import "github.com/tab58/tenzing-agent-harness/pkg/common"
+import "github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 var (
 	// Paid-tier limits; Cerebras free tier caps at 65K context / 32K output.

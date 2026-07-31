@@ -1,6 +1,6 @@
 package models
 
-import "github.com/tab58/tenzing-agent-harness/pkg/common"
+import "github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 // Selected models from https://openrouter.ai/models. Context window and
 // MaxTokens come from OpenRouter's models API (context_length and

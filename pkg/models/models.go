@@ -3,7 +3,7 @@
 // (e.g. Gemma, GPT-OSS, DeepSeek).
 package models
 
-import "github.com/tab58/tenzing-agent-harness/pkg/common"
+import "github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 type Model = common.Model
 

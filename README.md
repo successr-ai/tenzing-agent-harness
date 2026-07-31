@@ -39,10 +39,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/models"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
-	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/models"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/tenzing"
 )
 
 func main() {

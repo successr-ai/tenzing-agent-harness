@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
 
 func TestMergeEnv(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
 )
 
 // StartPersister subscribes the store to the event bus and appends an entry

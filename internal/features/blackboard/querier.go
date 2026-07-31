@@ -3,7 +3,7 @@ package blackboard
 import (
 	"context"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // Querier answers single-shot LLM prompts. Implementations must be safe for

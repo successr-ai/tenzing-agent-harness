@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core/tooldef"
 )
 
 const defaultLastN = 100

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 // recordingFactory records SpawnAgent calls and returns a canned answer.

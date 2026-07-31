@@ -10,7 +10,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
 )
 
 // Version is the session file format version (header "version" field).

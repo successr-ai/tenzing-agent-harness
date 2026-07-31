@@ -1,4 +1,4 @@
-module github.com/tab58/tenzing-agent-harness
+module github.com/successr-ai/tenzing-agent-harness
 
 go 1.25.9
 

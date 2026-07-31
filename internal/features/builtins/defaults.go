@@ -1,6 +1,6 @@
 package builtins
 
-import "github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+import "github.com/successr-ai/tenzing-agent-harness/internal/core/tooldef"
 
 // Defaults returns the standard builtin tool set. Each call constructs a
 // fresh FileTracker shared by Read/Edit/Write, enforcing read-before-edit

@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // ContextPort owns the conversation history: user/assistant messages, tool

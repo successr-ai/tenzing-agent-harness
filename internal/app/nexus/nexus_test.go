@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 func newTestNexus(t *testing.T, cfgs []ChannelConfig, emit func(core.Event), notify func(string)) *Nexus {

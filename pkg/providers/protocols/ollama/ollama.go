@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 )
 
 type Model = common.Model

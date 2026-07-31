@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // Image blocks in user messages ride Ollama's native images field as bare

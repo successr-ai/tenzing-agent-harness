@@ -16,8 +16,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 // Version is the current wire-schema version stamped on every line.

@@ -2,7 +2,7 @@ package models
 
 import (
 	"github.com/openai/openai-go/v3"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // Text-generation models from https://developers.openai.com/api/docs/models

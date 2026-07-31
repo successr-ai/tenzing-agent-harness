@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"

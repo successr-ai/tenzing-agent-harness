@@ -1,6 +1,6 @@
 package nexus
 
-import "github.com/tab58/tenzing-agent-harness/internal/core"
+import "github.com/successr-ai/tenzing-agent-harness/internal/core"
 
 // Nexus event types published on the harness event bus. Defined here (not
 // in core) so core stays ignorant of nexus.

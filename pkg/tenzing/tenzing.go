@@ -14,14 +14,14 @@
 package tenzing
 
 import (
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
-	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness/runner"
 )
 
 // Harness wires an agent, tool registry, and event bus into a runnable loop.

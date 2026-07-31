@@ -1,6 +1,6 @@
 package models
 
-import "github.com/tab58/tenzing-agent-harness/pkg/common"
+import "github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 // Models hosted by Lightning AI itself (the "Lightning AI" section of
 // https://lightning.ai/models?section=lightning). Third-party pass-through

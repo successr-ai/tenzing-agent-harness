@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/prompts"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 )
 
 // projectConfig holds harness options derived from drop-in config files

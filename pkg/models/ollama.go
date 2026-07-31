@@ -1,6 +1,6 @@
 package models
 
-import "github.com/tab58/tenzing-agent-harness/pkg/common"
+import "github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 // One definition per model on https://ollama.com/search, one entry per primary
 // tag (parameter-size tags and cloud tags). Quantization/format variants

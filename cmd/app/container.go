@@ -12,14 +12,14 @@ import (
 
 	httpserver "github.com/tab58/huma-http-server"
 	"github.com/tab58/huma-http-server/router"
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
-	"github.com/tab58/tenzing-agent-harness/internal/app"
-	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	nexustools "github.com/tab58/tenzing-agent-harness/internal/app/nexus/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
+	nexustools "github.com/successr-ai/tenzing-agent-harness/internal/app/nexus/tools"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
 
 // defaultModel is the model used when --model is not passed.

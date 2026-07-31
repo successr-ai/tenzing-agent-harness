@@ -13,12 +13,12 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
-	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
-	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/wire"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 )
 
 // jsonlWriter serializes concurrent JSON-line writes to one stream. Bus

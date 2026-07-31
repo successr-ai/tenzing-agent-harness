@@ -3,7 +3,7 @@ package compressor
 import (
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // Image blocks are charged a flat estimate — not their base64 length, which

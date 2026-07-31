@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 )
 
 func TestParseMCPServer(t *testing.T) {

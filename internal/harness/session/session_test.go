@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
 )
 
 var testNow = func() time.Time { return time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC) }

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
+	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 )
 
 // A completed turn must land in the session file: header, user entry, and

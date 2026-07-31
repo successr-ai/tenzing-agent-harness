@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 type fakeQuerierLLM struct {

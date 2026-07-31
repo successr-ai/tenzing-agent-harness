@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
 const (

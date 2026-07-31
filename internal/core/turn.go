@@ -6,7 +6,7 @@ package core
 import (
 	"context"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // ProviderToolDefinition is the provider-level tool definition surfaced

@@ -5,10 +5,10 @@ import (
 	"os"
 	"sync"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	protoanthropic "github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/anthropic"
-	protoollama "github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ollama"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	protoanthropic "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/anthropic"
+	protoollama "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ollama"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
 )
 
 // Default OpenAI-compatible endpoints for providers without a native

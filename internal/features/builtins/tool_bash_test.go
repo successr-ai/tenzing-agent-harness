@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core/tooldef"
 )
 
 // Regression: a timed-out command whose pipeline children outlive the shell
