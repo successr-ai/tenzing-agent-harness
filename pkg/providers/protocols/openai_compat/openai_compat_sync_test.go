@@ -227,6 +227,51 @@ func TestOpenAICompat_NewClientRequiresModel(t *testing.T) {
 	}
 }
 
+func TestOpenAICompat_WithExtraFieldWireShape(t *testing.T) {
+	var requestBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		requestBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		respondCompletion(t)(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	llm, err := NewClient(common.ModelDefinition{Name: "test-model"},
+		WithName("test"), WithAPIKey("key"), WithBaseURL(srv.URL),
+		WithExtraField("provider.sort", "throughput"),
+		WithExtraField("provider.allow_fallbacks", false),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if _, err := llm.SendSyncMessage(context.Background(), common.CompletionRequest{
+		Model:    "test-model",
+		Messages: []common.Message{common.NewUserMessage("hi")},
+	}); err != nil {
+		t.Fatalf("SendSyncMessage: %v", err)
+	}
+
+	var wire struct {
+		Provider struct {
+			Sort           string `json:"sort"`
+			AllowFallbacks *bool  `json:"allow_fallbacks"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(requestBody, &wire); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if wire.Provider.Sort != "throughput" {
+		t.Errorf("wire provider.sort = %q, want throughput: %s", wire.Provider.Sort, requestBody)
+	}
+	if wire.Provider.AllowFallbacks == nil || *wire.Provider.AllowFallbacks {
+		t.Errorf("wire provider.allow_fallbacks = %v, want false: %s", wire.Provider.AllowFallbacks, requestBody)
+	}
+}
+
 func TestOpenAICompat_CountTokensEstimate(t *testing.T) {
 	compat := &Client{Name: "test"}
 

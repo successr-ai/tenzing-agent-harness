@@ -27,6 +27,7 @@ type clientOptions struct {
 	baseURL                string
 	retryBackoff           *ratelimit.RetryBackoff
 	useMaxCompletionTokens bool
+	extraFields            []extraField
 	// rateLimit configures the client-side limiter: Rate+BurstSize enable the
 	// token bucket, MaxConcurrency bounds in-flight requests. All zero means
 	// unlimited.
@@ -99,6 +100,22 @@ func WithMaxConcurrency(limit int) ClientOption {
 	}
 }
 
+// extraField is a JSON body field injected into every request.
+type extraField struct {
+	path  string
+	value any
+}
+
+// WithExtraField injects a JSON field into every request body, for
+// provider-specific extensions the OpenAI API does not model (e.g.
+// OpenRouter's "provider" routing object). Path is a dot-separated JSON
+// path such as "provider.sort".
+func WithExtraField(path string, value any) ClientOption {
+	return func(o *clientOptions) {
+		o.extraFields = append(o.extraFields, extraField{path: path, value: value})
+	}
+}
+
 // WithMaxCompletionTokens sends max_completion_tokens instead of the
 // deprecated max_tokens, required by newer OpenAI models.
 func WithMaxCompletionTokens() ClientOption {
@@ -137,6 +154,9 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	}
 	if opts.baseURL != "" {
 		reqOpts = append(reqOpts, option.WithBaseURL(opts.baseURL))
+	}
+	for _, f := range opts.extraFields {
+		reqOpts = append(reqOpts, option.WithJSONSet(f.path, f.value))
 	}
 	sdk := openai.NewClient(reqOpts...)
 

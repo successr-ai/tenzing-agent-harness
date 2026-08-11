@@ -66,7 +66,10 @@ func buildLLM(def common.ModelDefinition, baseURL string) (common.LLM, error) {
 	case "lightning":
 		return compat("lightning", lightningBaseURL)
 	case "openrouter":
-		return compat("openrouter", openRouterBaseURL)
+		// Sort candidate providers by throughput; see
+		// https://openrouter.ai/docs/guides/routing/provider-selection#provider-sorting
+		return compat("openrouter", openRouterBaseURL,
+			openai_compat.WithExtraField("provider.sort", "throughput"))
 	default:
 		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, common.ErrUnknownProvider)
 	}
