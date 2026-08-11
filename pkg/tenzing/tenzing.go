@@ -57,9 +57,17 @@ var (
 	// not subagents — so a small/fast model is often the right choice.
 	WithBlackboardLLM = harness.WithBlackboardLLM
 
-	// WithAdvisorLLM enables the advisor tool using the given client.
-	// Without this option the advisor tool is not registered.
+	// WithAdvisorLLM enables the transcript-aware advisor tool and its
+	// write-gate using the given client. The advisor automatically sees the
+	// main conversation; the gate denies each turn's first state-changing
+	// tool call until the advisor has been consulted. Without this option
+	// neither is registered.
 	WithAdvisorLLM = harness.WithAdvisorLLM
+
+	// WithAdvisorNudge reminds an executor that has not consulted the
+	// advisor yet, from the given loop iteration onward (0 disables, the
+	// default). Only meaningful together with WithAdvisorLLM.
+	WithAdvisorNudge = harness.WithAdvisorNudge
 
 	// WithDisabledTool removes a tool by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".

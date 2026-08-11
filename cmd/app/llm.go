@@ -31,11 +31,15 @@ var providerEnvKeys = map[string]string{
 	"openrouter": "OPENROUTER_API_KEY",
 }
 
-// buildLLM constructs a protocol client for the model definition, resolving
-// the API key from the provider's conventional env var. baseURL overrides
-// the provider default endpoint when non-empty (models.yaml base_url).
-func buildLLM(def common.ModelDefinition, baseURL string) (common.LLM, error) {
-	key := os.Getenv(providerEnvKeys[def.Provider])
+// buildLLM constructs a protocol client for the model definition. apiKey
+// wins when non-empty (--api-key), else the provider's conventional env var.
+// baseURL overrides the provider default endpoint when non-empty
+// (--base-url or models.yaml base_url).
+func buildLLM(def common.ModelDefinition, baseURL string, apiKey string) (common.LLM, error) {
+	key := apiKey
+	if key == "" {
+		key = os.Getenv(providerEnvKeys[def.Provider])
+	}
 
 	compat := func(name string, defaultURL string, extra ...openai_compat.ClientOption) (common.LLM, error) {
 		url := baseURL
@@ -82,6 +86,11 @@ func buildLLM(def common.ModelDefinition, baseURL string) (common.LLM, error) {
 type llmCache struct {
 	mu      sync.Mutex
 	clients map[string]common.LLM
+	// CLI overrides, set once at startup from --base-url / --api-key.
+	// baseURL wins over models.yaml and provider defaults; apiKey wins over
+	// the provider env vars.
+	baseURL string
+	apiKey  string
 }
 
 // llms is the process-wide client cache, alongside the models registry.
@@ -90,12 +99,15 @@ var llms = &llmCache{clients: make(map[string]common.LLM)}
 func (c *llmCache) get(def common.ModelDefinition) (common.LLM, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	url := models.baseURLs[def.Provider]
+	url := c.baseURL
+	if url == "" {
+		url = models.baseURLs[def.Provider]
+	}
 	cacheKey := fmt.Sprintf("%s|%s|%s", def.Provider, def.Name, url)
 	if llm, ok := c.clients[cacheKey]; ok {
 		return llm, nil
 	}
-	llm, err := buildLLM(def, url)
+	llm, err := buildLLM(def, url, c.apiKey)
 	if err != nil {
 		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, err)
 	}

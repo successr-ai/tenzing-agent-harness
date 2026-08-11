@@ -2,8 +2,8 @@ version: '3'
 
 tasks:
   app:
-    desc: Run the agent app (HTTP/SSE server)
-    cmd: go run ./cmd/app
+    desc: 'Run the agent app (HTTP/SSE server); flags pass through: task app -- --model ...'
+    cmd: go run ./cmd/app {{.CLI_ARGS}}
 
   ask:
     desc: 'Run one headless query and print the answer (task ask -- "your query")'

@@ -27,10 +27,12 @@ type Policy struct {
 
 // DefaultPolicy asks for anything that executes code or writes files — and
 // for every MCP-origin tool — and allows read-only or in-memory-only tools
-// by default.
+// by default. advisor is deliberately not listed: it is read-only, and the
+// advisor write-gate mandates calling it, which must not hang on (or be
+// auto-denied by) an approval prompt in headless mode.
 func DefaultPolicy() Policy {
 	return Policy{
-		Ask:        []string{"bash", "write", "edit", "repl", "spawn_agent", "advisor"},
+		Ask:        []string{"bash", "write", "edit", "repl", "spawn_agent"},
 		AskOrigins: []string{"mcp:"},
 		Default:    core.Allow,
 	}

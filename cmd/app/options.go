@@ -27,6 +27,7 @@ type cliConfig struct {
 	SubagentModel   string
 	BlackboardModel string
 	AdvisorModel    string
+	AdvisorNudge    int
 
 	// budgets
 	MaxTokens     int64
@@ -54,8 +55,12 @@ type cliConfig struct {
 	Timeout        time.Duration
 
 	// wiring
-	MCPServers     []string
-	ConversationID string
+	ConfigPath       string             // --config; "" = TENZING_CONFIG or ./tenzing.yaml
+	MCPServers       []string           // --mcp-server "name=cmd args" strings
+	MCPServerConfigs []mcp.ServerConfig // pre-parsed servers from tenzing.yaml
+	ConversationID   string
+	BaseURL          string // overrides tenzing.yaml base_url and provider default endpoints
+	APIKey           string // overrides the provider's conventional env var
 
 	// serve
 	Port        int
@@ -63,7 +68,6 @@ type cliConfig struct {
 	Debug       bool
 
 	// env-only (no flags; filled from Config in RunE)
-	ModelsConfig string
 	ProjectTrust string
 
 	// test seams for --continue resolution; "" means the real defaults
@@ -116,6 +120,13 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	}
 	if err := roleLLM("--advisor-model", cfg.AdvisorModel, harness.WithAdvisorLLM); err != nil {
 		return nil, err
+	}
+	if cfg.AdvisorNudge > 0 {
+		if cfg.AdvisorModel == "" {
+			fmt.Fprintln(os.Stderr, "warning: --advisor-nudge requires --advisor-model; ignored")
+		} else {
+			opts = append(opts, harness.WithAdvisorNudge(cfg.AdvisorNudge))
+		}
 	}
 
 	if cfg.MaxTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {
@@ -202,6 +213,9 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 		if err != nil {
 			return nil, err
 		}
+		opts = append(opts, harness.WithMCPServer(sc))
+	}
+	for _, sc := range cfg.MCPServerConfigs {
 		opts = append(opts, harness.WithMCPServer(sc))
 	}
 

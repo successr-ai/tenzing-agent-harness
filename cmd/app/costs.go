@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
@@ -12,7 +13,7 @@ import (
 // alike. Models without pricing report a null cost, never zero.
 type costTracker struct {
 	mu      sync.Mutex
-	pricing map[string]costEntry // lowercase model name → USD per MTok
+	pricing map[string]config.CostEntry // lowercase model name → USD per MTok
 	byModel map[string]*modelUsage
 }
 
@@ -35,9 +36,9 @@ type costStats struct {
 	ByModel                  map[string]*modelUsage `json:"by_model"`
 }
 
-func newCostTracker(pricing map[string]costEntry) *costTracker {
+func newCostTracker(pricing map[string]config.CostEntry) *costTracker {
 	if pricing == nil {
-		pricing = map[string]costEntry{}
+		pricing = map[string]config.CostEntry{}
 	}
 	return &costTracker{pricing: pricing, byModel: map[string]*modelUsage{}}
 }

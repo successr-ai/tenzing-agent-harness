@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tab58/huma-http-server/config"
+
+	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 )
 
 // exitCodeError carries a process exit code through cobra's error return.
@@ -31,18 +33,25 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Env fallback for env-configured settings, including the
-			// models.yaml path and model/trust defaults.
+			// Env fallback for env-configured settings (model/trust
+			// defaults, serve settings).
 			envCfg := &Config{}
 			if err := config.Load(envCfg); err != nil {
 				return fmt.Errorf("load env config: %w", err)
 			}
 
-			// Load models.yaml into the process-wide registry before any
-			// model resolution so custom entries resolve everywhere.
-			reg, err := loadModelRegistry(envCfg.ModelsConfig)
+			// tenzing.yaml: the single config file (--config >
+			// TENZING_CONFIG > ./tenzing.yaml). Loaded first so its models:
+			// section feeds the registry before any model resolution.
+			cfgPath, explicit := resolveConfigPath(cfg.ConfigPath, cmd.Flags().Changed("config"))
+			file, _, err := cfgfile.Load(cfgPath, explicit)
 			if err != nil {
 				return err
+			}
+
+			reg, err := buildRegistry(file.Models)
+			if err != nil {
+				return fmt.Errorf("config %s: %w", cfgPath, err)
 			}
 			models = reg
 
@@ -61,11 +70,14 @@ func newRootCmd() *cobra.Command {
 			}
 
 			// Effective model precedence: --model flag > TENZING_MODEL env >
-			// models.yaml default > compiled-in default (the flag default).
+			// tenzing.yaml model: > tenzing.yaml models.default >
+			// compiled-in default (the flag default).
 			if !cmd.Flags().Changed("model") {
 				switch {
 				case os.Getenv("TENZING_MODEL") != "":
 					cfg.Model = envCfg.Model
+				case file.Model != "":
+					cfg.Model = file.Model
 				case models.defaultModel.Name != "":
 					cfg.Model = modelKey(models.defaultModel.Provider, models.defaultModel.Name)
 				}
@@ -77,13 +89,20 @@ func newRootCmd() *cobra.Command {
 
 			markSetFlags(cfg, cmd.Flags().Changed)
 
-			// Env fallback for the three pre-existing env vars.
-			mergeEnv(cfg, envCfg, cmd.Flags().Changed, func(name string) bool {
+			// Env fallback for the three pre-existing env vars, then
+			// tenzing.yaml values for whatever flags and env left unset.
+			present := func(name string) bool {
 				_, ok := os.LookupEnv(name)
 				return ok
-			})
-			cfg.ModelsConfig = envCfg.ModelsConfig
+			}
+			mergeEnv(cfg, envCfg, cmd.Flags().Changed, present)
 			cfg.ProjectTrust = envCfg.ProjectTrust
+			mergeConfigFile(cfg, file, cmd.Flags().Changed, present)
+
+			// Overrides for the LLM client factory: --base-url / tenzing.yaml
+			// beat provider defaults, --api-key beats provider env vars.
+			llms.baseURL = cfg.BaseURL
+			llms.apiKey = cfg.APIKey
 
 			if cfg.Prompt != "" {
 				// Warns on explicit CLI flags only — SERVER_PORT/NEXUS_CONFIG
@@ -104,14 +123,16 @@ func newRootCmd() *cobra.Command {
 	}
 
 	fl := cmd.Flags()
+	fl.StringVar(&cfg.ConfigPath, "config", "", "YAML config file (default tenzing.yaml, env TENZING_CONFIG); CLI flags and env vars override its values")
 	fl.StringVarP(&cfg.Prompt, "prompt", "p", "", "run one headless agent turn with this prompt, then exit (@path.png args attach images)")
 	fl.StringVar(&cfg.OutputFormat, "output-format", "text", "print-mode output: text (final answer) or json (JSONL events)")
 	fl.BoolVar(&cfg.ListModels, "list-models", false, "print known models and exit")
 
-	fl.StringVar(&cfg.Model, "model", modelKey(defaultModel.Provider, defaultModel.Name), "main model as provider/name (see --list-models)")
+	fl.StringVar(&cfg.Model, "model", modelKey(defaultModel.Provider, defaultModel.Name), `main model as provider/name (see --list-models) or inline JSON, e.g. '{"provider":"openrouter","name":"x","context_window":128000,"max_tokens":32768}' (model flags all accept both forms)`)
 	fl.StringVar(&cfg.SubagentModel, "subagent-model", "", "model for subagents (default: main model)")
 	fl.StringVar(&cfg.BlackboardModel, "blackboard-model", "", "model for blackboard llm_query (default: main model)")
-	fl.StringVar(&cfg.AdvisorModel, "advisor-model", "", "model for the advisor tool (setting it enables the tool)")
+	fl.StringVar(&cfg.AdvisorModel, "advisor-model", "", "model for the advisor tool; setting it enables the advisor and its write-gate")
+	fl.IntVar(&cfg.AdvisorNudge, "advisor-nudge", 0, "iteration to start reminding an unconsulted executor to call advisor (0 = off; needs --advisor-model)")
 
 	fl.Int64Var(&cfg.MaxTokens, "max-tokens", 0, "per-turn token budget, 0 = unlimited")
 	fl.IntVar(&cfg.MaxIterations, "max-iterations", 0, "per-turn iteration budget, 0 = unlimited")
@@ -134,6 +155,8 @@ func newRootCmd() *cobra.Command {
 
 	fl.StringArrayVar(&cfg.MCPServers, "mcp-server", nil, `mount an MCP server, repeatable: "name=command arg1 arg2"`)
 	fl.StringVar(&cfg.ConversationID, "conversation-id", "", "resume a prior conversation's memory")
+	fl.StringVar(&cfg.BaseURL, "base-url", "", "LLM endpoint base URL, overrides tenzing.yaml base_url and provider defaults")
+	fl.StringVar(&cfg.APIKey, "api-key", "", `LLM API key, overrides provider env vars (shell-expand to inject: --api-key "$OPENROUTER_API_KEY")`)
 
 	fl.IntVar(&cfg.Port, "port", 8080, "serve-mode listen port (env SERVER_PORT)")
 	fl.StringVar(&cfg.NexusConfig, "nexus-config", "nexus.yaml", "nexus channel config path (env NEXUS_CONFIG)")

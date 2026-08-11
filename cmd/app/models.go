@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"go.yaml.in/yaml/v3"
 
@@ -19,56 +19,20 @@ const (
 	defaultCustomMaxTokens     = 32768
 )
 
-// modelsFile is the on-disk shape of models.yaml:
-//
-//	default: ollama/glm-5.2-cloud
-//	models:
-//	  - provider: ollama
-//	    name: my-local-model
-//	    context_window: 128000   # optional
-//	    max_tokens: 32768        # optional
-//	    base_url: http://box:11434  # optional, applies to the provider
-type modelsFile struct {
-	Default string       `yaml:"default"`
-	Models  []modelEntry `yaml:"models"`
-}
-
-type modelEntry struct {
-	Provider      string     `yaml:"provider"`
-	Name          string     `yaml:"name"`
-	ContextWindow int        `yaml:"context_window"`
-	MaxTokens     int        `yaml:"max_tokens"`
-	BaseURL       string     `yaml:"base_url"`
-	Cost          *costEntry `yaml:"cost"`
-	// Vision marks the model as accepting image input; image-bearing
-	// queries are rejected on models without it.
-	Vision bool `yaml:"vision"`
-}
-
-// costEntry is USD per million tokens. CacheRead/CacheWrite price prompt-cache
-// read and creation tokens; when omitted they default to the Anthropic
-// convention (0.1× / 1.25× the input rate) at load time.
-type costEntry struct {
-	Input      float64 `yaml:"input"`
-	Output     float64 `yaml:"output"`
-	CacheRead  float64 `yaml:"cache_read"`
-	CacheWrite float64 `yaml:"cache_write"`
-}
-
 // modelRegistry resolves "provider/name" refs to model definitions:
-// custom entries from models.yaml first, then the compiled-in standard
-// models from pkg/tenzing.
+// custom entries from tenzing.yaml's models: section first, then the
+// compiled-in standard models from pkg/tenzing.
 type modelRegistry struct {
-	defaultModel common.ModelDefinition // zero when the file sets no default
+	defaultModel common.ModelDefinition // zero when the config sets no default
 	custom       map[string]common.ModelDefinition
 	baseURLs     map[string]string
 	// pricing is keyed by lowercase model name (matching the model field of
-	// LLMResponseEvent); only models.yaml entries with a cost block appear.
-	pricing map[string]costEntry
+	// LLMResponseEvent); only entries with a cost block appear.
+	pricing map[string]config.CostEntry
 }
 
 // models is the process-wide registry: builtins-only until root.go loads
-// models.yaml at startup. Tests exercising loadModelRegistry construct
+// tenzing.yaml at startup. Tests exercising buildRegistry construct
 // their own instances.
 var models = emptyRegistry()
 
@@ -77,7 +41,7 @@ func emptyRegistry() *modelRegistry {
 	return &modelRegistry{
 		custom:   map[string]common.ModelDefinition{},
 		baseURLs: map[string]string{},
-		pricing:  map[string]costEntry{},
+		pricing:  map[string]config.CostEntry{},
 	}
 }
 
@@ -123,50 +87,20 @@ func modelKey(p string, name string) string {
 	return strings.ToLower(p) + "/" + strings.ToLower(name)
 }
 
-// loadModelRegistry parses path. A missing file is not an error — it
-// returns an empty registry (builtins only, no default override). A file
-// that exists but is invalid is a startup error.
-func loadModelRegistry(path string) (*modelRegistry, error) {
+// buildRegistry builds the registry from tenzing.yaml's models: section.
+// A zero section yields a builtins-only registry. Invalid entries are a
+// startup error.
+func buildRegistry(sec config.ModelsSection) (*modelRegistry, error) {
 	reg := emptyRegistry()
 
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return reg, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read models config %s: %w", path, err)
-	}
-
-	var file modelsFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse models config %s: %w", path, err)
-	}
-
-	for i, e := range file.Models {
-		provider, ok := knownProviders[strings.ToLower(e.Provider)]
-		if !ok {
-			return nil, fmt.Errorf("models config %s: entry %d: unknown provider %q (known: %s)",
-				path, i+1, e.Provider, strings.Join(providerNames(), ", "))
+	for i, e := range sec.Entries {
+		def, err := defFromEntry(e)
+		if err != nil {
+			return nil, fmt.Errorf("models.entries[%d]: %w", i, err)
 		}
-		if e.Name == "" {
-			return nil, fmt.Errorf("models config %s: entry %d: name is required", path, i+1)
-		}
-		def := common.ModelDefinition{
-			Name:              e.Name,
-			Provider:          provider,
-			ContextWindowSize: e.ContextWindow,
-			MaxTokens:         e.MaxTokens,
-			SupportsVision:    e.Vision,
-		}
-		if def.ContextWindowSize == 0 {
-			def.ContextWindowSize = defaultCustomContextWindow
-		}
-		if def.MaxTokens == 0 {
-			def.MaxTokens = defaultCustomMaxTokens
-		}
-		reg.custom[modelKey(provider, e.Name)] = def
+		reg.custom[modelKey(def.Provider, e.Name)] = def
 		if e.BaseURL != "" {
-			reg.baseURLs[provider] = e.BaseURL
+			reg.baseURLs[def.Provider] = e.BaseURL
 		}
 		if e.Cost != nil {
 			cost := *e.Cost
@@ -180,19 +114,62 @@ func loadModelRegistry(path string) (*modelRegistry, error) {
 		}
 	}
 
-	if file.Default != "" {
-		def, err := reg.resolve(file.Default)
+	if sec.Default != "" {
+		def, err := reg.resolve(sec.Default)
 		if err != nil {
-			return nil, fmt.Errorf("models config %s: default: %w", path, err)
+			return nil, fmt.Errorf("models.default: %w", err)
 		}
 		reg.defaultModel = def
 	}
 	return reg, nil
 }
 
-// resolve maps a "provider/name" ref to a model definition — custom entries
-// first, then the compiled-in standard models.
+// defFromEntry validates a model entry (provider known, name set) and
+// applies the custom-model defaults. Shared by tenzing.yaml loading and
+// inline JSON refs.
+func defFromEntry(e config.ModelEntry) (common.ModelDefinition, error) {
+	provider, ok := knownProviders[strings.ToLower(e.Provider)]
+	if !ok {
+		return common.ModelDefinition{}, fmt.Errorf("unknown provider %q (known: %s)",
+			e.Provider, strings.Join(providerNames(), ", "))
+	}
+	if e.Name == "" {
+		return common.ModelDefinition{}, fmt.Errorf("name is required")
+	}
+	def := common.ModelDefinition{
+		Name:              e.Name,
+		Provider:          provider,
+		ContextWindowSize: e.ContextWindow,
+		MaxTokens:         e.MaxTokens,
+		SupportsVision:    e.Vision,
+	}
+	if def.ContextWindowSize == 0 {
+		def.ContextWindowSize = defaultCustomContextWindow
+	}
+	if def.MaxTokens == 0 {
+		def.MaxTokens = defaultCustomMaxTokens
+	}
+	return def, nil
+}
+
+// resolve maps a model ref to a definition. A ref starting with "{" is an
+// inline definition — JSON (or YAML flow) with the model entry fields, e.g.
+// {"provider":"openrouter","name":"x","context_window":128000} — validated
+// and defaulted like a models: entry (base_url/cost fields are ignored).
+// Otherwise "provider/name" is looked up: custom entries first, then the
+// compiled-in standard models.
 func (r *modelRegistry) resolve(ref string) (common.ModelDefinition, error) {
+	if strings.HasPrefix(ref, "{") {
+		var e config.ModelEntry
+		if err := yaml.Unmarshal([]byte(ref), &e); err != nil {
+			return common.ModelDefinition{}, fmt.Errorf("inline model definition: %w", err)
+		}
+		def, err := defFromEntry(e)
+		if err != nil {
+			return common.ModelDefinition{}, fmt.Errorf("inline model definition: %w", err)
+		}
+		return def, nil
+	}
 	provider, name, ok := strings.Cut(ref, "/")
 	if !ok || provider == "" || name == "" {
 		return common.ModelDefinition{}, fmt.Errorf("model ref %q must be provider/model-name", ref)
@@ -224,8 +201,13 @@ func providerNames() []string {
 // resolveModel maps a "provider/name" ref to a model definition via the
 // process-wide registry, listing the valid refs on failure.
 func resolveModel(s string) (common.ModelDefinition, error) {
-	def, err := models.resolve(strings.TrimSpace(s))
+	ref := strings.TrimSpace(s)
+	def, err := models.resolve(ref)
 	if err != nil {
+		// The model list doesn't help diagnose a bad inline definition.
+		if strings.HasPrefix(ref, "{") {
+			return common.ModelDefinition{}, err
+		}
 		return common.ModelDefinition{}, fmt.Errorf("%w; valid models:\n%s", err, modelList())
 	}
 	return def, nil

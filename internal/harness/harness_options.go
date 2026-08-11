@@ -34,8 +34,14 @@ type harnessOptions struct {
 	// inside the shared blackboard REPL; nil falls back to the main LLM.
 	blackboardLLM common.LLM
 
-	// advisorLLM enables the advisor tool when non-nil.
+	// advisorLLM enables the transcript-aware advisor tool and its write-gate
+	// when non-nil.
 	advisorLLM common.LLM
+
+	// advisorNudge, when > 0, reminds an executor that has not consulted the
+	// advisor from that iteration onward. 0 disables the nudge. Only
+	// meaningful when advisorLLM is set.
+	advisorNudge int
 
 	// onTextDelta is called with incremental text output from the agent,
 	// tagged with the emitting runner's id. It is called from the agent's
@@ -193,11 +199,26 @@ func WithBlackboardLLM(llm common.LLM) HarnessOption {
 	}
 }
 
-// WithAdvisorLLM enables the advisor tool using the given client. Without
-// this option the advisor tool is not registered.
+// WithAdvisorLLM enables the transcript-aware advisor tool and its write-gate
+// using the given client. The advisor automatically sees the main
+// conversation when called; the gate denies each turn's first state-changing
+// tool call until the advisor has been consulted (read-only tools flow
+// freely). Without this option neither is registered and behavior is
+// unchanged.
 func WithAdvisorLLM(llm common.LLM) HarnessOption {
 	return func(o *harnessOptions) {
 		o.advisorLLM = llm
+	}
+}
+
+// WithAdvisorNudge reminds an executor that has not consulted the advisor
+// yet, from the given loop iteration onward (0 disables, the default). Only
+// meaningful together with WithAdvisorLLM; ignored otherwise. Off by default
+// because nudging measurably helps weak executor models and hurts strong
+// ones.
+func WithAdvisorNudge(iteration int) HarnessOption {
+	return func(o *harnessOptions) {
+		o.advisorNudge = iteration
 	}
 }
 

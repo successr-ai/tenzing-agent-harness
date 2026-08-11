@@ -83,12 +83,13 @@ func TestDefaultPolicyAsksForMCPOrigins(t *testing.T) {
 
 func TestDefaultPolicyAsksForMutatingTools(t *testing.T) {
 	p := DefaultPolicy()
-	for _, tool := range []string{"bash", "write", "edit", "repl", "spawn_agent", "advisor"} {
+	for _, tool := range []string{"bash", "write", "edit", "repl", "spawn_agent"} {
 		if got := decideFor(t, p, tool, core.Allow); got != core.AskUser {
 			t.Errorf("DefaultPolicy(%s) = %v, want AskUser", tool, got)
 		}
 	}
-	for _, tool := range []string{"read", "grep", "glob", "list_skills", "load_skill", "todowrite"} {
+	// advisor is read-only and gate-mandated, so it must not require approval.
+	for _, tool := range []string{"read", "grep", "glob", "list_skills", "load_skill", "todowrite", "advisor"} {
 		if got := decideFor(t, p, tool, core.Allow); got != core.Allow {
 			t.Errorf("DefaultPolicy(%s) = %v, want Allow", tool, got)
 		}

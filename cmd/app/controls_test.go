@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,11 +11,7 @@ import (
 // happy paths are covered by harness-level tests on the default brain.
 func TestControlEndpointsErrorMapping(t *testing.T) {
 	api := newTestServer(t, &answerAgent{})
-	reg, err := loadModelRegistry(filepath.Join(t.TempDir(), "absent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	api.models = reg
+	api.models = emptyRegistry()
 
 	t.Run("model set with bad ref is 400", func(t *testing.T) {
 		in := &modelInput{}

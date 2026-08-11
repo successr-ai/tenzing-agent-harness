@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"time"
 
-	httpserver "github.com/tab58/huma-http-server"
-	"github.com/tab58/huma-http-server/router"
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
@@ -20,19 +18,20 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
+	httpserver "github.com/tab58/huma-http-server"
+	"github.com/tab58/huma-http-server/router"
 )
 
 // defaultModel is the model used when --model is not passed.
 var defaultModel = pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition)
 
 type Config struct {
-	ServerPort   int    `mapstructure:"SERVER_PORT" default:"8080"`
-	LogDebug     bool   `mapstructure:"LOG_DEBUG"`
-	NexusConfig  string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
-	ModelsConfig string `mapstructure:"TENZING_MODELS_CONFIG" default:"models.yaml"`
+	ServerPort  int    `mapstructure:"SERVER_PORT" default:"8080"`
+	LogDebug    bool   `mapstructure:"LOG_DEBUG"`
+	NexusConfig string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
 	// Model overrides the default model as "provider/model-name"
-	// (e.g. "ollama/qwen3.5-9b"); resolved against models.yaml entries and
-	// the built-in model set.
+	// (e.g. "ollama/qwen3.5-9b"); resolved against tenzing.yaml models:
+	// entries and the built-in model set.
 	Model string `mapstructure:"TENZING_MODEL"`
 	// ProjectTrust is the default trust decision for directories without a
 	// persisted trust.json entry: "trust" loads project-local config,
@@ -252,10 +251,13 @@ func runServe(ctx context.Context, cfg *cliConfig) error {
 	defer app.Shutdown()
 
 	fmt.Println("tenzing agent harness")
+	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
 	fmt.Printf("  model   %s\n", app.Harness().GetCurrentModel())
 	fmt.Printf("  cwd     %s\n", app.Cwd())
 	fmt.Printf("  tools   %d registered\n", len(app.Harness().ToolDefinitions()))
-	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
+	for _, t := range app.Harness().ToolDefinitions() {
+		fmt.Printf("    - %s\n", t.Name)
+	}
 	fmt.Println()
 
 	err = app.Start(ctx)

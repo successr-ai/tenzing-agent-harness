@@ -177,6 +177,14 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		gateExt = &toolCallGateExt{gate: o.toolGate}
 		defaultExts = append(defaultExts, gateExt)
 	}
+	// The advisor write-gate runs after permissions/read-only so it can only
+	// escalate their decisions. Registered only when the advisor is enabled;
+	// its read-only classifier is late-bound to the composite below.
+	var advisorGate *advisor.GateExt
+	if o.advisorLLM != nil {
+		advisorGate = advisor.NewGateExt(o.advisorNudge)
+		defaultExts = append(defaultExts, advisorGate)
+	}
 	defaultExts = append(defaultExts,
 		reminders.New(todoFile.FormatReminder),
 		skillsExt,
@@ -272,8 +280,21 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		})
 	}
 
+	// The main context store is built before the advisor tool so the advisor
+	// can read the live conversation (its transcript view) at call time. The
+	// runner receives the same store below.
+	mainStore := contextstore.New(contextstore.Config{
+		LLM:                     mainLLM,
+		InitialMemory:           initialMemory,
+		InitialHistory:          initialHistory,
+		Emitter:                 o.eventBus,
+		RunnerID:                mainRunnerID,
+		CompressionThreshold:    o.compressionThreshold,
+		CompressionKeepMessages: o.compressionKeepMessages,
+	})
+
 	if o.advisorLLM != nil {
-		toolRegistry.Register(advisor.NewAdvisorTool(o.advisorLLM))
+		toolRegistry.Register(advisor.NewAdvisorTool(o.advisorLLM, mainStore.Messages))
 	}
 
 	for _, tool := range o.extraTools {
@@ -344,18 +365,9 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	if roExt != nil {
 		roExt.classify = composite.ReadOnly
 	}
-
-	// The runner owns conversation history via a ContextPort; the store
-	// seeds resumed memory and emits ContextCompressedEvent on compaction.
-	mainStore := contextstore.New(contextstore.Config{
-		LLM:                     mainLLM,
-		InitialMemory:           initialMemory,
-		InitialHistory:          initialHistory,
-		Emitter:                 o.eventBus,
-		RunnerID:                mainRunnerID,
-		CompressionThreshold:    o.compressionThreshold,
-		CompressionKeepMessages: o.compressionKeepMessages,
-	})
+	if advisorGate != nil {
+		advisorGate.SetClassifier(composite.ReadOnly)
+	}
 
 	// create agent runner
 	runnerOpts := []runner.AgentRunnerOption{

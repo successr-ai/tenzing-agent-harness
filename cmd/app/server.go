@@ -20,6 +20,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/wire"
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
@@ -63,7 +64,7 @@ type agentServer struct {
 // newAgentServer builds the server. pricing (model name → USD per MTok) may
 // be nil; it must be passed here rather than set later because the event
 // forwarding goroutine starts reading the cost tracker immediately.
-func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), pricing map[string]costEntry, extraOpts ...harness.HarnessOption) (*agentServer, error) {
+func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), pricing map[string]config.CostEntry, extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
 		bus:       bus,
 		nexus:     nx,

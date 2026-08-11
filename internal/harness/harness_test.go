@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,7 +175,108 @@ func TestHarnessAdvisorRegistration(t *testing.T) {
 			if found != tt.want {
 				t.Errorf("advisor registered = %v, want %v", found, tt.want)
 			}
+			// The write-gate's prompt fragment rides with the tool: present
+			// exactly when the advisor is enabled.
+			hasMandate := strings.Contains(h.SystemPrompt(), "state-changing")
+			if hasMandate != tt.want {
+				t.Errorf("advisor gate mandate in system prompt = %v, want %v", hasMandate, tt.want)
+			}
 		})
+	}
+}
+
+// recordingLLM captures SendSyncMessage requests (the advisor's consults)
+// and answers with canned advice.
+type recordingLLM struct {
+	stubLLM
+	mu   sync.Mutex
+	reqs []common.CompletionRequest
+}
+
+func (r *recordingLLM) SendSyncMessage(_ context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reqs = append(r.reqs, req)
+	return common.CompletionResponse{
+		Content: []common.ContentBlock{common.NewTextContent("canned advice")},
+	}, nil
+}
+
+func (r *recordingLLM) requests() []common.CompletionRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]common.CompletionRequest(nil), r.reqs...)
+}
+
+// With an advisor configured, the write-gate denies the turn's first
+// state-changing call until the advisor has been consulted; the advisor's
+// request carries the live conversation transcript.
+func TestHarnessAdvisorWriteGate(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "out.txt")
+
+	agent := newScriptedAgent(
+		toolStep("write", jsonInput(map[string]any{"file_path": outFile, "content": "x"})),
+		toolStep("advisor", `{}`),
+		toolStep("write", jsonInput(map[string]any{"file_path": outFile, "content": "x"})),
+		finalStep("done"),
+	)
+	advisorLLM := &recordingLLM{}
+
+	h, err := New(&stubLLM{},
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
+		WithPermissionsDisabled(), // isolate the gate from approval prompts
+		WithAdvisorLLM(advisorLLM),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "please write the file")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+
+	calls := agent.capturedCalls()
+	if len(calls) != 4 {
+		t.Fatalf("agent calls = %d, want 4", len(calls))
+	}
+	lastOutput := func(c capturedCall) string {
+		msg := c.Messages[len(c.Messages)-1]
+		var out strings.Builder
+		for _, block := range msg.Content {
+			out.WriteString(block.ToolOutput)
+		}
+		return out.String()
+	}
+	if got := lastOutput(calls[1]); !strings.Contains(got, "advisor") {
+		t.Errorf("first write result = %q, want gate denial mentioning advisor", got)
+	}
+	if got := lastOutput(calls[2]); got != "canned advice" {
+		t.Errorf("advisor result = %q, want canned advice", got)
+	}
+	if got := lastOutput(calls[3]); strings.Contains(got, "advisor") {
+		t.Errorf("post-consult write result = %q, want execution, not denial", got)
+	}
+	if _, err := os.Stat(outFile); err != nil {
+		t.Errorf("post-consult write did not create file: %v", err)
+	}
+
+	// The advisor saw the live transcript, not a model-authored summary.
+	reqs := advisorLLM.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("advisor consults = %d, want 1", len(reqs))
+	}
+	body := reqs[0].Messages[0].Content[0].Text
+	if !strings.Contains(body, "please write the file") {
+		t.Errorf("advisor transcript missing user turn: %q", body)
 	}
 }
 

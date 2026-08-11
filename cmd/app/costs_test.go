@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
@@ -16,7 +17,7 @@ func llmEvent(model string, in, out int64) core.LLMResponseEvent {
 }
 
 func TestCostTracker(t *testing.T) {
-	ct := newCostTracker(map[string]costEntry{
+	ct := newCostTracker(map[string]config.CostEntry{
 		"priced-model": {Input: 3.0, Output: 15.0}, // USD per MTok
 	})
 
@@ -54,7 +55,7 @@ func TestCostTracker(t *testing.T) {
 }
 
 func TestCostTrackerCacheTokens(t *testing.T) {
-	ct := newCostTracker(map[string]costEntry{
+	ct := newCostTracker(map[string]config.CostEntry{
 		"cached-model": {Input: 3.0, Output: 15.0, CacheRead: 0.3, CacheWrite: 3.75},
 	})
 
