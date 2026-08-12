@@ -334,10 +334,7 @@ func (c *Client) streamOnce(ctx context.Context, params openai.ChatCompletionNew
 	slices.Sort(indexes)
 	for _, idx := range indexes {
 		call := toolCalls[idx]
-		args := call.args.String()
-		if args == "" {
-			args = "{}"
-		}
+		args := normalizeToolArguments(call.args.String())
 		accumulated.Content = append(accumulated.Content, common.NewToolUseContent(call.id, call.name, json.RawMessage(args)))
 	}
 

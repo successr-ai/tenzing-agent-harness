@@ -134,3 +134,50 @@ func TestFromOpenAIFinishReason(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeToolArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty becomes object", "", "{}"},
+		{"whitespace becomes object", " \n\t", "{}"},
+		{"valid object passes through", `{"path":"main.go"}`, `{"path":"main.go"}`},
+		{"valid array passes through", `[1,2]`, `[1,2]`},
+		{"malformed wrapped under _raw", `{"path":`, `{"_raw":"{\"path\":"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeToolArguments(tt.in); got != tt.want {
+				t.Errorf("normalizeToolArguments(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Empty tool-call arguments must reach the wire as "{}" — OpenAI-compatible
+// providers (Ollama Cloud) reject replayed tool calls whose arguments are
+// not valid JSON with 400 "invalid tool call arguments".
+func TestToOpenAIMessages_EmptyToolArgumentsNormalized(t *testing.T) {
+	msgs := []common.Message{
+		{
+			Role: common.RoleAssistant,
+			Content: []common.ContentBlock{
+				common.NewToolUseContent("call_01", "todo_read", json.RawMessage("")),
+			},
+		},
+	}
+
+	result := toOpenAIMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1", len(result))
+	}
+	raw, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal assistant message: %v", err)
+	}
+	if !strings.Contains(string(raw), `"arguments":"{}"`) {
+		t.Errorf("empty arguments not normalized to {}: %s", raw)
+	}
+}

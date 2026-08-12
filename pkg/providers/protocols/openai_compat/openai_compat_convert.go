@@ -6,12 +6,33 @@ package openai_compat
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
+
+// normalizeToolArguments returns tool-call arguments as a valid JSON
+// payload. OpenAI-compatible providers strictly parse the arguments of
+// replayed assistant tool calls (Ollama Cloud 400s with "invalid tool call
+// arguments"), but models sometimes emit empty strings (zero-arg tools) or
+// malformed JSON. Empty becomes "{}"; malformed is preserved under a
+// "_raw" key so the model can still see what it wrote.
+func normalizeToolArguments(args string) string {
+	if strings.TrimSpace(args) == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(args)) {
+		return args
+	}
+	wrapped, err := json.Marshal(map[string]string{"_raw": args})
+	if err != nil {
+		return "{}"
+	}
+	return string(wrapped)
+}
 
 func toOpenAIMessages(msgs []common.Message) []openai.ChatCompletionMessageParamUnion {
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
@@ -83,7 +104,7 @@ func toOpenAIAssistantMessage(msg common.Message) openai.ChatCompletionMessagePa
 				ID: block.ToolUseID,
 				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
 					Name:      block.ToolName,
-					Arguments: string(block.ToolInput),
+					Arguments: normalizeToolArguments(string(block.ToolInput)),
 				},
 			},
 		})
@@ -128,7 +149,7 @@ func fromOpenAIResponse(res *openai.ChatCompletion) common.CompletionResponse {
 				content = append(content, common.NewToolUseContent(
 					tc.ID,
 					tc.Function.Name,
-					json.RawMessage(tc.Function.Arguments),
+					json.RawMessage(normalizeToolArguments(tc.Function.Arguments)),
 				))
 			}
 		}
