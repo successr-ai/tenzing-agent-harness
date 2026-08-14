@@ -182,7 +182,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	// its read-only classifier is late-bound to the composite below.
 	var advisorGate *advisor.GateExt
 	if o.advisorLLM != nil {
-		advisorGate = advisor.NewGateExt(o.advisorNudge)
+		advisorGate = advisor.NewGateExt(o.advisorNudge, o.advisorExemptTools...)
 		defaultExts = append(defaultExts, advisorGate)
 	}
 	defaultExts = append(defaultExts,

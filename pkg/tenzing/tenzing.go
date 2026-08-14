@@ -69,6 +69,15 @@ var (
 	// default). Only meaningful together with WithAdvisorLLM.
 	WithAdvisorNudge = harness.WithAdvisorNudge
 
+	// WithAdvisorExemptTools exempts the named tools from the advisor
+	// write-gate: they run even as a turn's first, unconsulted,
+	// state-changing call. Use for a harness whose only state-changing
+	// action is a forced/schema-only answer tool with no orientation phase
+	// to precede it — gating it would deny the call and force a
+	// deny→advisor→retry round-trip the harness has no budget for. Ignored
+	// unless WithAdvisorLLM is also set.
+	WithAdvisorExemptTools = harness.WithAdvisorExemptTools
+
 	// WithDisabledTool removes a tool by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
 	WithDisabledTool = harness.WithDisabledTool

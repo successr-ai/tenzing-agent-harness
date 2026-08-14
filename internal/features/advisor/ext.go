@@ -38,15 +38,19 @@ var (
 // GateExt enforces the advisor "hard rule" on the main loop: per turn, the
 // first state-changing tool call is denied until the advisor has been called.
 // Read-only tools flow freely; unknown tools (no read-only marker, e.g. MCP)
-// count as state-changing. classify is late-bound like readOnlyExt's: the
-// composite ToolPort is built after the extension set, so harness.New assigns
-// it via SetClassifier before any turn runs.
+// count as state-changing. Tools named via WithAdvisorExemptTools also flow
+// freely, unconsulted — for harnesses whose first (and only) tool call is a
+// forced/schema-only answer with no orientation phase to hide behind.
+// classify is late-bound like readOnlyExt's: the composite ToolPort is built
+// after the extension set, so harness.New assigns it via SetClassifier before
+// any turn runs.
 //
 // nudgeIteration, when > 0, appends a reminder from that iteration onward on
 // turns where the advisor has not been consulted (off by default — Anthropic
 // measured nudging counterproductive on strong executor models).
 type GateExt struct {
 	nudgeIteration int
+	exempt         map[string]bool
 
 	mu        sync.Mutex
 	classify  func(name string) bool // true = read-only
@@ -55,8 +59,18 @@ type GateExt struct {
 }
 
 // NewGateExt builds the write-gate. nudgeIteration <= 0 disables the nudge.
-func NewGateExt(nudgeIteration int) *GateExt {
-	return &GateExt{nudgeIteration: nudgeIteration}
+// exemptTools names tools that bypass the gate even unconsulted (e.g. a
+// harness's forced single-shot answer tool, which has no orientation phase
+// to precede it).
+func NewGateExt(nudgeIteration int, exemptTools ...string) *GateExt {
+	var exempt map[string]bool
+	if len(exemptTools) > 0 {
+		exempt = make(map[string]bool, len(exemptTools))
+		for _, name := range exemptTools {
+			exempt[strings.ToLower(name)] = true
+		}
+	}
+	return &GateExt{nudgeIteration: nudgeIteration, exempt: exempt}
 }
 
 // SetClassifier late-binds the read-only classifier (composite.ReadOnly).
@@ -100,6 +114,8 @@ func (e *GateExt) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error
 		e.consulted = true
 	case e.classify != nil && e.classify(name):
 		// read-only orientation: always allowed
+	case e.exempt[name]:
+		// exempted by WithAdvisorExemptTools: always allowed
 	case !e.consulted:
 		deny(tcc, "Call `advisor` before your first state-changing action this turn. "+
 			"Read-only orientation (reads, searches, listings) is allowed first. "+

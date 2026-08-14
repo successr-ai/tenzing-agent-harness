@@ -43,6 +43,10 @@ type harnessOptions struct {
 	// meaningful when advisorLLM is set.
 	advisorNudge int
 
+	// advisorExemptTools names tools the advisor write-gate never blocks,
+	// even unconsulted. Only meaningful when advisorLLM is set.
+	advisorExemptTools []string
+
 	// onTextDelta is called with incremental text output from the agent,
 	// tagged with the emitting runner's id. It is called from the agent's
 	// goroutine, so it should not block.
@@ -219,6 +223,18 @@ func WithAdvisorLLM(llm common.LLM) HarnessOption {
 func WithAdvisorNudge(iteration int) HarnessOption {
 	return func(o *harnessOptions) {
 		o.advisorNudge = iteration
+	}
+}
+
+// WithAdvisorExemptTools exempts the named tools from the advisor write-gate:
+// they run even as a turn's first, unconsulted, state-changing call. Use this
+// for a harness whose only state-changing action is a forced/schema-only
+// answer tool with no orientation phase to precede it — gating it would deny
+// the call and force the executor into an extra deny→advisor→retry
+// round-trip it has no budget for. Ignored unless WithAdvisorLLM is also set.
+func WithAdvisorExemptTools(names ...string) HarnessOption {
+	return func(o *harnessOptions) {
+		o.advisorExemptTools = append(o.advisorExemptTools, names...)
 	}
 }
 

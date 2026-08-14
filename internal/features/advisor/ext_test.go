@@ -68,6 +68,68 @@ func TestGateExt_Matrix(t *testing.T) {
 	}
 }
 
+// testGateWithExempt is testGate plus WithAdvisorExemptTools-style names.
+func testGateWithExempt(nudge int, exempt ...string) *GateExt {
+	g := NewGateExt(nudge, exempt...)
+	g.SetClassifier(func(name string) bool {
+		return name == "read" || name == "grep"
+	})
+	return g
+}
+
+func TestGateExt_ExemptTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		sequence []string
+		want     core.Decision
+	}{
+		{"exempt tool before consult", []string{"propose_grid"}, core.Allow},
+		{"exempt tool matched case-insensitively", []string{"Propose_Grid"}, core.Allow},
+		{"non-exempt write before consult still denied", []string{"write"}, core.Deny},
+		{"exempt tool does not itself count as a consult", []string{"propose_grid", "write"}, core.Deny},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := testGateWithExempt(0, "propose_grid")
+			startTurn(t, g, 1)
+			var last *core.ToolCallContext
+			for _, tool := range tt.sequence {
+				last = call(t, g, tool)
+			}
+			if last.Decision != tt.want {
+				t.Errorf("Decision = %v, want %v (reason %q)", last.Decision, tt.want, last.Reason)
+			}
+		})
+	}
+}
+
+// A gate with no exempt tools configured behaves exactly as before: this
+// guards against the variadic default silently changing behavior.
+func TestGateExt_NoExemptToolsUnchanged(t *testing.T) {
+	g := testGate(0)
+	startTurn(t, g, 1)
+	if tcc := call(t, g, "write"); tcc.Decision != core.Deny {
+		t.Errorf("write before consult, no exemptions = %v, want Deny", tcc.Decision)
+	}
+}
+
+func TestGateExt_ExemptToolNeverLowersDecision(t *testing.T) {
+	g := testGateWithExempt(0, "propose_grid")
+	startTurn(t, g, 1)
+	tcc := &core.ToolCallContext{
+		Call:     &core.ToolCall{Name: "propose_grid"},
+		Decision: core.Deny,
+		Reason:   "denied earlier",
+	}
+	if err := g.OnToolCall(context.Background(), tcc); err != nil {
+		t.Fatalf("OnToolCall: %v", err)
+	}
+	if tcc.Decision != core.Deny || tcc.Reason != "denied earlier" {
+		t.Errorf("exemption overwrote a prior Deny: %v %q", tcc.Decision, tcc.Reason)
+	}
+}
+
 func TestGateExt_ResetsPerTurn(t *testing.T) {
 	g := testGate(0)
 	startTurn(t, g, 1)

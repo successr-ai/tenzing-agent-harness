@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/prompts"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
@@ -280,6 +282,142 @@ func TestHarnessAdvisorWriteGate(t *testing.T) {
 	}
 }
 
+// WithAdvisorExemptTools lets a named tool through as a turn's first call
+// even unconsulted, and does not itself count as consulting the advisor.
+func TestHarnessAdvisorExemptTools(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "out.txt")
+
+	agent := newScriptedAgent(
+		toolStep("write", jsonInput(map[string]any{"file_path": outFile, "content": "x"})),
+		finalStep("done"),
+	)
+	advisorLLM := &recordingLLM{}
+
+	h, err := New(&stubLLM{},
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
+		WithPermissionsDisabled(),
+		WithAdvisorLLM(advisorLLM),
+		WithAdvisorExemptTools("write"),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "please write the file")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+
+	calls := agent.capturedCalls()
+	if len(calls) != 2 {
+		t.Fatalf("agent calls = %d, want 2 (exempted write should not be denied)", len(calls))
+	}
+	lastOutput := func(c capturedCall) string {
+		msg := c.Messages[len(c.Messages)-1]
+		var out strings.Builder
+		for _, block := range msg.Content {
+			out.WriteString(block.ToolOutput)
+		}
+		return out.String()
+	}
+	if got := lastOutput(calls[1]); strings.Contains(got, "advisor") {
+		t.Errorf("exempted write result = %q, want execution, not gate denial", got)
+	}
+	if _, err := os.Stat(outFile); err != nil {
+		t.Errorf("exempted write did not create file: %v", err)
+	}
+	if reqs := advisorLLM.requests(); len(reqs) != 0 {
+		t.Errorf("advisor consults = %d, want 0 (exempted tool never triggers a consult)", len(reqs))
+	}
+}
+
+// TestHarnessAdvisorGate_SingleShotForcedToolIncident reproduces the
+// starscream-document-api incident: a closed, single-shot harness whose only
+// action is one forced schema tool call (grid proposal / classification) was
+// wired with WithAdvisorLLM. The gate has no orientation phase to hide
+// behind, so it denies that forced call, and the executor needs
+// deny→advisor→retry — 3 round-trips where the harness budget was sized for
+// 1. The budget here (MaxIterations: 2) is exactly what an unaugmented
+// "call the tool, then answer" shape needs; it's what proposeGridBudget
+// represented before the advisor was wired in without widening it.
+func TestHarnessAdvisorGate_SingleShotForcedToolIncident(t *testing.T) {
+	redirectHome(t)
+
+	t.Run("ungated advisor exhausts the unwidened budget", func(t *testing.T) {
+		agent := newScriptedAgent(
+			toolStep("propose_grid", jsonInput(map[string]any{"rows": 3})), // iter 1: denied, no orientation phase to precede it
+			toolStep("advisor", `{}`),                                     // iter 2: forced to consult before it can even retry
+			// iter 3 (retry propose_grid) never runs: budget exhausts first.
+		)
+		advisorLLM := &recordingLLM{}
+
+		h, err := New(&stubLLM{},
+			WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+			WithSystemPrompt("test"),
+			WithContextFilesDisabled(),
+			WithPermissionsDisabled(),
+			WithAdvisorLLM(advisorLLM),
+			WithBudgets(budgets.Limits{MaxIterations: 2}),
+		)
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		defer h.Shutdown()
+
+		answer, err := h.RunTurn(context.Background(), "propose a grid")
+		if err == nil {
+			t.Fatalf("RunTurn succeeded with answer %q, want budget-exhaustion error (this is the incident)", answer)
+		}
+		if !strings.Contains(err.Error(), "budget exhausted") {
+			t.Errorf("error = %q, want it to mention budget exhaustion", err.Error())
+		}
+		if got := agent.callCount(); got != 2 {
+			t.Errorf("agent calls = %d, want 2 (denial + forced advisor consult, then budget cuts it off)", got)
+		}
+	})
+
+	t.Run("exempt tool fits the same unwidened budget", func(t *testing.T) {
+		agent := newScriptedAgent(
+			toolStep("propose_grid", jsonInput(map[string]any{"rows": 3})), // iter 1: exempt, runs immediately
+			finalStep("grid proposed"),                                    // iter 2: same shape as before advisor was ever wired in
+		)
+		advisorLLM := &recordingLLM{}
+
+		h, err := New(&stubLLM{},
+			WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+			WithSystemPrompt("test"),
+			WithContextFilesDisabled(),
+			WithPermissionsDisabled(),
+			WithAdvisorLLM(advisorLLM),
+			WithAdvisorExemptTools("propose_grid"),
+			WithBudgets(budgets.Limits{MaxIterations: 2}),
+		)
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		defer h.Shutdown()
+
+		answer, err := h.RunTurn(context.Background(), "propose a grid")
+		if err != nil {
+			t.Fatalf("RunTurn error: %v, want success within the unwidened budget", err)
+		}
+		if answer != "grid proposed" {
+			t.Errorf("answer = %q, want %q", answer, "grid proposed")
+		}
+		if reqs := advisorLLM.requests(); len(reqs) != 0 {
+			t.Errorf("advisor consults = %d, want 0", len(reqs))
+		}
+	})
+}
+
 func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
 	h := newTestHarness(t, WithDisabledTool("bash"), WithDisabledTool("edit"))
 	names := make(map[string]bool)
@@ -325,12 +463,7 @@ func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
 	}
 check:
 	hasType := func(et core.EventType) bool {
-		for _, t := range types {
-			if t == et {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(types, et)
 	}
 	if !hasType(core.EventTurnStarted) {
 		t.Error("missing TurnStarted event")
