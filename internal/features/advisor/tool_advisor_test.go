@@ -132,6 +132,9 @@ func TestAdvisorTool_RequestShape(t *testing.T) {
 	if req.MaxTokens != maxTokensStdResponse {
 		t.Errorf("MaxTokens = %d, want %d", req.MaxTokens, maxTokensStdResponse)
 	}
+	if req.Think == nil || *req.Think {
+		t.Error("Think = true or nil, want false (reasoning would starve the response budget)")
+	}
 	if len(req.Messages) != 1 {
 		t.Fatalf("Messages = %d, want 1", len(req.Messages))
 	}

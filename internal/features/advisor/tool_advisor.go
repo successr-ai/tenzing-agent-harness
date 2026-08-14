@@ -111,11 +111,16 @@ func (t *AdvisorTool) Execute(ctx context.Context, exctx tooldef.ExecutionContex
 		prompt.WriteString(input.Question)
 	}
 
+	// Reasoning off: maxTokensStdResponse is too small to fund both a
+	// thinking pass and the answer, and a busy thinking pass can eat the
+	// whole budget and leave the response text empty.
+	noThink := false
 	resp, err := t.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     t.llm.GetCurrentModel(),
 		System:    systemPrompt,
 		Messages:  []common.Message{common.NewUserMessage(prompt.String())},
 		MaxTokens: maxTokensStdResponse,
+		Think:     &noThink,
 	})
 	if err != nil {
 		return tooldef.NewToolResult(fmt.Sprintf("advisor error: %v", err), tooldef.WithError()), nil
