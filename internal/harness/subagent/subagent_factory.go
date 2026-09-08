@@ -102,7 +102,7 @@ func NewSubAgentFactory(cfg SubAgentFactoryConfig) *SubAgentFactory {
 
 func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskContext string) (string, error) {
 	childDepth := f.currentDepth + 1
-	slog.Info("[subagent] spawning", "depth", childDepth, "max_depth", f.maxDepth, "task_len", len(task))
+	slog.Debug("[subagent] spawning", "depth", childDepth, "max_depth", f.maxDepth, "task_len", len(task))
 	start := time.Now()
 	agentID := f.childID()
 
@@ -199,7 +199,7 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 		return "", err
 	}
 
-	slog.Info("[subagent] completed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "answer_len", len(result))
+	slog.Debug("[subagent] completed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "answer_len", len(result))
 	if f.emitter != nil {
 		f.emitter.Emit(core.SubagentStoppedEvent{
 			BaseEvent: core.NewBaseEvent(core.EventSubagentStopped, childRunner.ID()),

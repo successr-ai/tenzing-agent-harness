@@ -166,7 +166,7 @@ func (b *Blackboard) Execute(ctx context.Context, agentID, code string) (string,
 		b.resetLocked()
 		return "", fmt.Errorf("blackboard execute for %s failed (repl restarted, bb contents lost): %w", agentID, err)
 	}
-	slog.Info("[blackboard] exec", "agent", agentID, "code", capStr(code, logCodeMax),
+	slog.Debug("[blackboard] exec", "agent", agentID, "code", capStr(code, logCodeMax),
 		"stdout_len", len(stdout), "stdout_head", capStr(stdout, logStdoutMax))
 	return stdout, nil
 }
@@ -216,6 +216,6 @@ func (b *Blackboard) Deposit(ctx context.Context, slot, key, value string) (Prev
 		b.resetLocked()
 		return Preview{}, fmt.Errorf("blackboard deposit for %s: %w", slot, err)
 	}
-	slog.Info("[blackboard] deposit", "slot", slot, "key", key, "value_len", len(value))
+	slog.Debug("[blackboard] deposit", "slot", slot, "key", key, "value_len", len(value))
 	return NewPreview(slot, key, value, b.cfg.HeadChars, b.cfg.TailChars), nil
 }

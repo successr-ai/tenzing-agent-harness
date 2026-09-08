@@ -269,7 +269,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 		return core.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
 	}
 
-	slog.Info("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_creation_tokens", resp.Usage.CacheCreationInputTokens, "stop_reason", resp.StopReason)
+	slog.Debug("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "cache_read_tokens", resp.Usage.CacheReadInputTokens, "cache_creation_tokens", resp.Usage.CacheCreationInputTokens, "stop_reason", resp.StopReason)
 	if text := resp.Text(); text != "" {
 		slog.Debug("assistant text", "text", text)
 	}

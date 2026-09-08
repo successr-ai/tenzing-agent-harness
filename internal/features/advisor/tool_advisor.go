@@ -126,7 +126,7 @@ func (t *AdvisorTool) Execute(ctx context.Context, exctx tooldef.ExecutionContex
 		return tooldef.NewToolResult(fmt.Sprintf("advisor error: %v", err), tooldef.WithError()), nil
 	}
 
-	slog.Info("advisor consulted",
+	slog.Debug("advisor consulted",
 		"model", t.llm.GetCurrentModel(),
 		"input_tokens", resp.Usage.InputTokens,
 		"output_tokens", resp.Usage.OutputTokens)

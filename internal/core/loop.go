@@ -323,7 +323,7 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 	}
 
 	// execute loop
-	slog.Info("loop started", "runner", l.id, "input", input)
+	slog.Debug("loop started", "runner", l.id, "input", input)
 	slog.Debug("system prompt", "runner", l.id, "prompt_len", len(l.sysPrompt), "prompt", l.sysPrompt)
 	l.emit(TurnStartedEvent{
 		BaseEvent: NewBaseEvent(EventTurnStarted, l.id),
@@ -367,7 +367,7 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 			if err := l.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
 				slog.Error("fsm reset after termination", "runner", l.id, "error", err)
 			}
-			slog.Info("loop terminated by hook", "runner", l.id, "reason", turnCtx.Terminate)
+			slog.Debug("loop terminated by hook", "runner", l.id, "reason", turnCtx.Terminate)
 			return TurnResult{Terminated: turnCtx.Terminate}, nil
 		}
 		reminders := turnCtx.Reminders
@@ -459,7 +459,7 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 				return TurnResult{}, fmt.Errorf("fsm stop: %w", err)
 			}
 			dur := time.Since(loopStart).Round(time.Millisecond)
-			slog.Info("loop completed", "runner", l.id, "iterations", iteration, "duration", dur, "answer_len", len(finalAnswer))
+			slog.Debug("loop completed", "runner", l.id, "iterations", iteration, "duration", dur, "answer_len", len(finalAnswer))
 			slog.Debug("final answer", "runner", l.id, "answer", finalAnswer)
 			l.emit(LoopStoppedEvent{
 				BaseEvent:  NewBaseEvent(EventLoopStopped, l.id),
@@ -542,7 +542,7 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 		// tool results, so tool_use/tool_result pairing in the context store
 		// is never split by an interleaved user message.
 		for _, msg := range l.drainSteering() {
-			slog.Info("steering injected", "runner", l.id, "iter", iteration, "message_len", len(msg))
+			slog.Debug("steering injected", "runner", l.id, "iter", iteration, "message_len", len(msg))
 			if err := l.context.AppendUser(ctx, msg); err != nil {
 				loopErr = fmt.Errorf("append steering message: %w", err)
 				break

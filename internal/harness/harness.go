@@ -556,7 +556,7 @@ func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 		return "", err
 	}
 	if expanded != query {
-		slog.Info("prompt template expanded", "query", query)
+		slog.Debug("prompt template expanded", "query", query)
 	}
 	return h.mainAgentRunner.RunLoop(ctx, expanded)
 }
@@ -580,7 +580,7 @@ func (h *Harness) RunTurnWithImages(ctx context.Context, query string, images []
 		return "", err
 	}
 	if expanded != query {
-		slog.Info("prompt template expanded", "query", query)
+		slog.Debug("prompt template expanded", "query", query)
 	}
 	query = expanded
 	if len(images) > 0 {
