@@ -86,6 +86,12 @@ var (
 	// or unreadable directories are skipped at discovery time.
 	WithSkillsDir = harness.WithSkillsDir
 
+	// WithPluginsDir registers an additional Claude config directory (the
+	// one holding settings.json and plugins/) whose enabled plugins
+	// contribute skills, namespaced "<plugin>:<skill>". Nonexistent or
+	// unreadable directories are skipped at discovery time.
+	WithPluginsDir = harness.WithPluginsDir
+
 	// WithTool registers a custom tool definition; first registration of a
 	// name wins.
 	WithTool = harness.WithTool

@@ -78,6 +78,10 @@ type harnessOptions struct {
 	// skillDirs are directories to find skills in
 	skillDirs []string
 
+	// pluginDirs are Claude config directories (holding settings.json and
+	// plugins/) whose enabled plugins contribute namespaced skills.
+	pluginDirs []string
+
 	// disabledTools removes tools by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
 	disabledTools []string
@@ -153,6 +157,9 @@ func defaultHarnessOptions() *harnessOptions {
 		eventBus: eventbus.NewEventBus(),
 		skillDirs: []string{
 			"~/.claude/skills",
+		},
+		pluginDirs: []string{
+			"~/.claude",
 		},
 		extraTools:            make(map[string]tooldef.Definition),
 		subagentMaxDepth:      1,
@@ -249,6 +256,16 @@ func WithDisabledTool(toolName string) HarnessOption {
 func WithSkillsDir(dir string) HarnessOption {
 	return func(o *harnessOptions) {
 		o.skillDirs = append(o.skillDirs, dir)
+	}
+}
+
+// WithPluginsDir registers an additional Claude config directory (the one
+// holding settings.json and plugins/) whose enabled plugins contribute
+// skills, namespaced "<plugin>:<skill>". Nonexistent or unreadable
+// directories are skipped at discovery time.
+func WithPluginsDir(dir string) HarnessOption {
+	return func(o *harnessOptions) {
+		o.pluginDirs = append(o.pluginDirs, dir)
 	}
 }
 

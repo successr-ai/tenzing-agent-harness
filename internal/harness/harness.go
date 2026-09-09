@@ -61,6 +61,12 @@ type Harness struct {
 	cwd            string
 
 	promptTemplates *prompttmpl.Registry
+	skills          *skills.Registry
+
+	// context records which files fed the main system prompt, and whether
+	// they overran contextFilesMaxBytes — in which case the tail of the last
+	// file(s) never reached the prompt even though every path is reported.
+	context contextLoad
 
 	shutdownOnce sync.Once
 }
@@ -131,6 +137,9 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	skillsRegistry := skills.NewRegistry()
 	for _, skillDir := range o.skillDirs {
 		skillsRegistry.RegisterSkillDir(skillDir)
+	}
+	for _, pluginDir := range o.pluginDirs {
+		skillsRegistry.RegisterPluginDir(pluginDir)
 	}
 	skillsExt := skills.NewExt(skillsRegistry)
 
@@ -320,9 +329,10 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	}
 	// AGENTS.md context files: global + ancestor chain, appended after the
 	// base prompt (main agent only; subagents keep their focused prompts).
+	var ctx contextLoad
 	if !o.contextFilesDisabled {
-		if ctxFiles := loadContextFiles(cwd); ctxFiles != "" {
-			mainSystemPrompt += ctxFiles
+		if ctx = loadContextFiles(cwd); ctx.content != "" {
+			mainSystemPrompt += ctx.content
 		}
 	}
 	// Extension prompt fragments (skills index, …) are appended at the
@@ -426,6 +436,8 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		sessionDir:      sessionDir,
 		cwd:             cwd,
 		promptTemplates: promptTemplates,
+		skills:          skillsRegistry,
+		context:         ctx,
 	}, nil
 }
 
@@ -542,6 +554,31 @@ func (h *Harness) GetCurrentModel() string {
 
 // ToolDefinitions returns the full mounted tool surface — native registry
 // tools plus extension-provided tools — as the model sees it.
+// ContextFiles returns the AGENTS.md paths loaded into the main system prompt,
+// in the order they were appended. Empty when none were found or when
+// WithContextFilesDisabled was set. Callers must not mutate the result.
+func (h *Harness) ContextFiles() []string {
+	return h.context.files
+}
+
+// RuleFiles returns the ~/.claude/rules/*.md paths loaded into the main system
+// prompt. Callers must not mutate the result.
+func (h *Harness) RuleFiles() []string {
+	return h.context.rules
+}
+
+// ContextFilesTruncated reports whether the loaded context files overran the
+// size cap, meaning the prompt holds less than ContextFiles implies.
+func (h *Harness) ContextFilesTruncated() bool {
+	return h.context.truncated
+}
+
+// Skills returns the discovered skills as name -> description, the same index
+// the agent sees in its system prompt. Callers must not mutate the result.
+func (h *Harness) Skills() map[string]string {
+	return h.skills.GetSkillMap()
+}
+
 func (h *Harness) ToolDefinitions() []common.ToolDefinition {
 	return h.toolPort.Definitions()
 }

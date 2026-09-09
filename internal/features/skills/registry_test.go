@@ -32,6 +32,28 @@ func TestDiscoverSkipsUnreadableDirs(t *testing.T) {
 	}
 }
 
+func TestDiscoverKeysByDirectoryName(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "on-disk-name")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: frontmatter-name\ndescription: d\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRegistry()
+	r.RegisterSkillDir(root)
+
+	if _, err := r.Load("on-disk-name"); err != nil {
+		t.Errorf("skill not keyed by its directory: %v", err)
+	}
+	if _, err := r.Load("frontmatter-name"); err == nil {
+		t.Error("skill registered under its frontmatter name, want directory name only")
+	}
+}
+
 func TestParseFrontmatter(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -63,6 +85,18 @@ func TestParseFrontmatter(t *testing.T) {
 			content:  "---\nname: alpha\nversion: 2\ndescription: d\nallowed-tools:\n  - Bash\n---\nbody\n",
 			wantName: "alpha",
 			wantDesc: "d",
+		},
+		{
+			name:     "unquoted description with colon",
+			content:  "---\nname: alpha\ndescription: Use when planning: (1) foo, (2) bar\n---\nbody\n",
+			wantName: "alpha",
+			wantDesc: "Use when planning: (1) foo, (2) bar",
+		},
+		{
+			name:     "unquoted description with colon, name last",
+			content:  "---\ndescription: Trigger: any time\nname: alpha\n---\nbody\n",
+			wantName: "alpha",
+			wantDesc: "Trigger: any time",
 		},
 		{
 			name:    "no frontmatter",

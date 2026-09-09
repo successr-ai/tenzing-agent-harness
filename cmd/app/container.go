@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
@@ -260,6 +261,9 @@ func runServe(ctx context.Context, cfg *cliConfig) error {
 	for _, t := range app.Harness().ToolDefinitions() {
 		fmt.Printf("    - %s\n", t.Name)
 	}
+	printSkills(os.Stdout, app.Harness().Skills())
+	printContextFiles(os.Stdout, app.Harness().ContextFiles(), cfg.NoContextFiles, app.Harness().ContextFilesTruncated())
+	printRuleFiles(os.Stdout, app.Harness().RuleFiles(), cfg.NoContextFiles)
 	fmt.Println()
 
 	err = app.Start(ctx)
@@ -275,4 +279,51 @@ func runServe(ctx context.Context, cfg *cliConfig) error {
 	}
 	slog.Info("server stopped")
 	return nil
+}
+
+// printContextFiles lists the AGENTS.md files folded into the main system
+// prompt, in the order they were appended (global first, then root->cwd, so
+// the last one listed is the most specific).
+func printContextFiles(w io.Writer, paths []string, disabled, truncated bool) {
+	if disabled {
+		fmt.Fprintln(w, "  context disabled (--no-context-files)")
+		return
+	}
+	note := ""
+	if truncated {
+		// Every path below was read, but the tail did not survive the cap.
+		note = " (truncated — tail dropped)"
+	}
+	fmt.Fprintf(w, "  context %d loaded%s\n", len(paths), note)
+	for _, p := range paths {
+		fmt.Fprintf(w, "    - %s\n", p)
+	}
+}
+
+// printRuleFiles lists the ~/.claude/rules/*.md files folded into the main
+// system prompt. They load with the context files and share their opt-out, but
+// are reported apart: standing policy rather than project context.
+func printRuleFiles(w io.Writer, paths []string, disabled bool) {
+	if disabled {
+		return
+	}
+	fmt.Fprintf(w, "  rules   %d loaded\n", len(paths))
+	for _, p := range paths {
+		fmt.Fprintf(w, "    - %s\n", p)
+	}
+}
+
+// printSkills lists the skills discovered at startup — the ones whose
+// frontmatter parsed and that the agent therefore sees in its system prompt.
+// Skipped directories are reported separately as warnings by the registry.
+func printSkills(w io.Writer, skills map[string]string) {
+	fmt.Fprintf(w, "  skills  %d loaded\n", len(skills))
+	names := make([]string, 0, len(skills))
+	for name := range skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "    - %s\n", name)
+	}
 }
