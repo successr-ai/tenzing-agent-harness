@@ -17,23 +17,14 @@ import (
 	nexustools "github.com/successr-ai/tenzing-agent-harness/internal/app/nexus/tools"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
-	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
-	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 	httpserver "github.com/tab58/huma-http-server"
 	"github.com/tab58/huma-http-server/router"
 )
-
-// defaultModel is the model used when --model is not passed.
-var defaultModel = pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition)
 
 type Config struct {
 	ServerPort  int    `mapstructure:"SERVER_PORT" default:"8080"`
 	LogDebug    bool   `mapstructure:"LOG_DEBUG"`
 	NexusConfig string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
-	// Model overrides the default model as "provider/model-name"
-	// (e.g. "ollama/qwen3.5-9b"); resolved against tenzing.yaml models:
-	// entries and the built-in model set.
-	Model string `mapstructure:"TENZING_MODEL"`
 	// ProjectTrust is the default trust decision for directories without a
 	// persisted trust.json entry: "trust" loads project-local config,
 	// anything else skips it.
@@ -63,7 +54,7 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	}
 
 	logB := app.NewLogBroadcaster()
-	logFile, err := setupLogging(cwd, cfg.Debug, logB)
+	logFile, err := setupLogging(cfg.Debug, logB)
 	if err != nil {
 		return nil, err
 	}
@@ -173,11 +164,10 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	}, nil
 }
 
-// setupLogging opens the log file in dir and installs it as the slog
+// setupLogging opens the log file in logDir() and installs it as the slog
 // default, teeing output to the /debug SSE broadcaster. Debug runs get a
 // fresh timestamped file at trace level; normal runs append at info level.
-// Serve mode passes the cwd; print mode passes printLogDir().
-func setupLogging(dir string, debug bool, tee io.Writer) (*os.File, error) {
+func setupLogging(debug bool, tee io.Writer) (*os.File, error) {
 	name := ".tenzing-agent.log"
 	level := slog.LevelInfo
 	if debug {
@@ -185,7 +175,7 @@ func setupLogging(dir string, debug bool, tee io.Writer) (*os.File, error) {
 		level = core.LevelTrace
 	}
 
-	logFile, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile(filepath.Join(logDir(), name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}

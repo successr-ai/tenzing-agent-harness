@@ -7,11 +7,14 @@ import (
 )
 
 // resolveConfigPath's fallback chain: --config > TENZING_CONFIG > ./tenzing.yaml
-// > $XDG_CONFIG_HOME/tenzing/tenzing.yaml.
+// > <UserConfigDir>/tenzing/tenzing.yaml.
 func TestResolveConfigPath(t *testing.T) {
-	writeUserConfig := func(t *testing.T, xdg string) string {
+	writeUserConfig := func(t *testing.T) string {
 		t.Helper()
-		dir := filepath.Join(xdg, "tenzing")
+		dir := userConfigDir()
+		if dir == "" {
+			t.Fatal("userConfigDir() is empty")
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -64,9 +67,8 @@ func TestResolveConfigPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cwd := t.TempDir()
-			xdg := t.TempDir()
 			t.Chdir(cwd)
-			t.Setenv("XDG_CONFIG_HOME", xdg)
+			redirectUserConfig(t)
 			t.Setenv("TENZING_CONFIG", tt.env)
 
 			if tt.localConfig {
@@ -76,7 +78,7 @@ func TestResolveConfigPath(t *testing.T) {
 			}
 			var user string
 			if tt.userConfig {
-				user = writeUserConfig(t, xdg)
+				user = writeUserConfig(t)
 			}
 
 			path, explicit := resolveConfigPath(tt.flagValue, tt.flagChanged)
@@ -88,4 +90,14 @@ func TestResolveConfigPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// redirectUserConfig points os.UserConfigDir() at a temp directory, so a
+// probe of the per-user config never finds the developer's own files. HOME
+// covers macOS (~/Library/Application Support) and the XDG fallback; the
+// empty XDG_CONFIG_HOME keeps a set variable from winning on Linux.
+func redirectUserConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 }

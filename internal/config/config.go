@@ -1,7 +1,8 @@
 // Package config owns the tenzing.yaml schema: one file for every durable
-// setting — models (registry included; this file replaces models.yaml),
-// advisor, subagent, budgets, permissions, serve settings. Parsing is
-// strict: unknown keys are a startup error so typos fail loudly.
+// setting — providers and models (the registry lives here; this file
+// replaces models.yaml), advisor, subagent, budgets, permissions, serve
+// settings. Parsing is strict: unknown keys are a startup error so typos
+// fail loudly.
 //
 // Precedence is applied by cmd/app, not here: CLI flag > env var >
 // tenzing.yaml > default. Scalars whose zero value is a meaningful setting
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +25,10 @@ import (
 
 // File is the on-disk shape of tenzing.yaml. All keys are optional.
 type File struct {
-	// Model refs are "provider/name" or inline {provider, name, ...} JSON/YAML.
+	// Model refs name an entry in Models by its `name`, or are an inline
+	// {provider, model_name, ...} JSON/YAML definition naming a declared
+	// provider. Model is required: it is the main agent's model, and the
+	// fallback for every role that leaves its own ref empty.
 	Model           string `yaml:"model"`
 	SubagentModel   string `yaml:"subagent_model"`
 	BlackboardModel string `yaml:"blackboard_model"`
@@ -31,7 +36,9 @@ type File struct {
 	AdvisorModel string `yaml:"advisor_model"`
 	AdvisorNudge int    `yaml:"advisor_nudge"`
 
-	MaxTokens     int64     `yaml:"max_tokens"`
+	// MaxTurnTokens bounds input+output cumulatively for one turn; a
+	// model entry's MaxResponseTokens bounds a single response instead.
+	MaxTurnTokens int64     `yaml:"max_turn_tokens"`
 	MaxIterations int       `yaml:"max_iterations"`
 	MaxWallClock  *Duration `yaml:"max_wall_clock"`
 
@@ -45,9 +52,6 @@ type File struct {
 	NoContextFiles  bool      `yaml:"no_context_files"`
 
 	SystemFile string `yaml:"system_file"`
-	BaseURL    string `yaml:"base_url"`
-	// APIKey works but env vars / --api-key are preferred over a key on disk.
-	APIKey string `yaml:"api_key"`
 
 	Port        *int   `yaml:"port"`
 	NexusConfig string `yaml:"nexus_config"`
@@ -59,7 +63,11 @@ type File struct {
 	// name. Nil means the default policy is used unchanged.
 	Permissions *PermissionsSection `yaml:"permissions"`
 
-	Models ModelsSection `yaml:"models"`
+	// Providers are the backends models are served from; Models are the
+	// named model definitions that reference them. Both are required for
+	// any model to resolve — there is no compiled-in fallback set.
+	Providers []Provider   `yaml:"providers"`
+	Models    []ModelEntry `yaml:"models"`
 }
 
 // PermissionsSection overrides the default permission policy. A tool named
@@ -82,24 +90,53 @@ type MCPServer struct {
 	Args    []string `yaml:"args"`
 }
 
-// ModelsSection is the model registry: what models.yaml used to hold.
-// Default is the model used when neither --model, TENZING_MODEL, nor the
-// top-level `model:` key picks one.
-type ModelsSection struct {
-	Default string       `yaml:"default"`
-	Entries []ModelEntry `yaml:"entries"`
+// ProviderTypes are the wire protocols a provider can speak — the three
+// the repo actually implements, not a list of vendors. Most hosted APIs
+// speak the OpenAI protocol, so DefaultProviderType covers them all and a
+// provider entry usually needs no type at all; what distinguishes one such
+// backend from another is its URL, not its name.
+var ProviderTypes = []string{"anthropic", "ollama", DefaultProviderType}
+
+// DefaultProviderType is the type a provider gets when it names none.
+const DefaultProviderType = "openai_compat"
+
+// Provider is one backend models are served from. Name is a unique label
+// referenced by ModelEntry.Provider, and is what the backend reports itself
+// as in logs. Type defaults to DefaultProviderType. URL is required for
+// openai_compat — there is nothing to default to, since the URL is the only
+// thing identifying which backend it is — and optional for anthropic and
+// ollama, whose clients carry their vendor's endpoint. APIKey is optional
+// (omitted means the endpoint needs no auth, as with a local Ollama) and is
+// usually written as "$SOME_VAR" so the secret stays in the environment;
+// see expandEnv.
+//
+// Extra injects fields into every request body, by dotted path
+// ("provider.sort: throughput"). It is an openai_compat concept and is
+// ignored on the other types. One key is reserved: max_completion_tokens
+// renames the token-limit parameter rather than adding a field, which is
+// what current OpenAI models require.
+type Provider struct {
+	Name   string         `yaml:"name"`
+	Type   string         `yaml:"type"`
+	URL    string         `yaml:"url"`
+	APIKey string         `yaml:"api_key"`
+	Extra  map[string]any `yaml:"extra"`
 }
 
-// ModelEntry defines a custom model. ContextWindow and MaxTokens are
-// defaulted by the registry when omitted; BaseURL applies to the whole
-// provider.
+// ModelEntry defines a model. Name is the unique local alias that model
+// refs use; ModelName is the id sent to the provider on the wire (the two
+// differ so a config can call glm-5.3-flash "main-model"). Provider names
+// an entry in File.Providers. ContextWindow and MaxResponseTokens are
+// defaulted by the registry when omitted.
 type ModelEntry struct {
-	Provider      string     `yaml:"provider"`
-	Name          string     `yaml:"name"`
-	ContextWindow int        `yaml:"context_window"`
-	MaxTokens     int        `yaml:"max_tokens"`
-	BaseURL       string     `yaml:"base_url"`
-	Cost          *CostEntry `yaml:"cost"`
+	Provider      string `yaml:"provider"`
+	Name          string `yaml:"name"`
+	ModelName     string `yaml:"model_name"`
+	ContextWindow int    `yaml:"context_window"`
+	// MaxResponseTokens is the cap on a single response; the file's
+	// top-level MaxTurnTokens bounds a whole turn instead.
+	MaxResponseTokens int        `yaml:"max_response_tokens"`
+	Cost              *CostEntry `yaml:"cost"`
 	// Vision marks the model as accepting image input; image-bearing
 	// queries are rejected on models without it.
 	Vision bool `yaml:"vision"`
@@ -164,9 +201,6 @@ func Load(path string, explicit bool) (File, bool, error) {
 		if errors.Is(err, io.EOF) {
 			return File{}, true, nil
 		}
-		if strings.Contains(err.Error(), "field default not found") {
-			return File{}, false, fmt.Errorf("parse config %s: %w\n(this looks like an old models.yaml — nest it under a models: key, with the model list renamed to entries:)", path, err)
-		}
 		return File{}, false, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
@@ -189,17 +223,69 @@ func expandEnv(s string) string {
 	})
 }
 
+// ValidateProviders checks a provider list for the required fields, a known
+// type, and unique names. Exported because cmd/app assembles the effective
+// list from the file plus --provider flags and needs the same checks after
+// merging, not just at parse time.
+func ValidateProviders(ps []Provider) error {
+	seen := map[string]bool{}
+	for i := range ps {
+		p := &ps[i]
+		// An absent type is the common case: most backends speak the
+		// OpenAI protocol. Filled in here so nothing downstream has to
+		// re-apply the default.
+		if p.Type == "" {
+			p.Type = DefaultProviderType
+		}
+		switch {
+		case p.Name == "":
+			return fmt.Errorf("providers[%d]: name is required", i)
+		case !slices.Contains(ProviderTypes, p.Type):
+			return fmt.Errorf("providers[%d] (%s): unknown type %q (one of: %s; omit it for %s)",
+				i, p.Name, p.Type, strings.Join(ProviderTypes, ", "), DefaultProviderType)
+		// Only openai_compat needs a URL: for anthropic and ollama the
+		// client knows its vendor's endpoint.
+		case p.Type == DefaultProviderType && p.URL == "":
+			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, DefaultProviderType)
+		case seen[p.Name]:
+			return fmt.Errorf("providers[%d]: duplicate provider name %q", i, p.Name)
+		}
+		seen[p.Name] = true
+	}
+	return nil
+}
+
 func (f File) validate() error {
 	for i, s := range f.MCPServers {
 		if s.Name == "" || s.Command == "" {
 			return fmt.Errorf("mcp_servers[%d]: name and command are required", i)
 		}
 	}
-	for i, e := range f.Models.Entries {
-		if e.Provider == "" || e.Name == "" {
-			return fmt.Errorf("models.entries[%d]: provider and name are required", i)
-		}
+	if err := ValidateProviders(f.Providers); err != nil {
+		return err
 	}
+	providers := map[string]bool{}
+	for _, p := range f.Providers {
+		providers[p.Name] = true
+	}
+
+	models := map[string]bool{}
+	for i, e := range f.Models {
+		switch {
+		case e.Name == "":
+			return fmt.Errorf("models[%d]: name is required", i)
+		case e.ModelName == "":
+			return fmt.Errorf("models[%d] (%s): model_name is required", i, e.Name)
+		case e.Provider == "":
+			return fmt.Errorf("models[%d] (%s): provider is required", i, e.Name)
+		case !providers[e.Provider]:
+			return fmt.Errorf("models[%d] (%s): provider %q is not declared in providers:", i, e.Name, e.Provider)
+		case models[e.Name]:
+			return fmt.Errorf("models[%d]: duplicate model name %q", i, e.Name)
+		}
+		models[e.Name] = true
+	}
+
 	if f.AdvisorNudge < 0 {
 		return fmt.Errorf("advisor_nudge must be >= 0, got %d", f.AdvisorNudge)
 	}

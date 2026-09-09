@@ -15,6 +15,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 )
@@ -187,8 +188,13 @@ func (a *gatedAgent) seen() []string {
 func newTestServer(t *testing.T, agent core.Agent, extraOpts ...harness.HarnessOption) *agentServer {
 	t.Helper()
 	bus := eventbus.NewEventBus()
+	reg := testRegistry(t, config.ModelEntry{Name: "test-model", Provider: "local", ModelName: "glm-5.3"})
+	model, err := reg.resolve("test-model")
+	if err != nil {
+		t.Fatalf("resolve test model: %v", err)
+	}
 	api, err := newAgentServer(
-		defaultModel,
+		model,
 		bus, nil, app.NewLogBroadcaster(), nil, nil,
 		append([]harness.HarnessOption{
 			harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),

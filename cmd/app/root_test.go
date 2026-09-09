@@ -12,8 +12,6 @@ import (
 
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
-	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
-	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
 
 func TestMergeEnv(t *testing.T) {
@@ -143,6 +141,7 @@ func TestRootCmdWiresSetFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			isolateConfig(t, "")
 			orig := runPrintFn
 			t.Cleanup(func() { runPrintFn = orig })
 
@@ -190,6 +189,7 @@ func TestPrintModeWarnsServeOnlyFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			isolateConfig(t, "")
 			orig := runPrintFn
 			t.Cleanup(func() { runPrintFn = orig })
 			runPrintFn = func(_ context.Context, _ *cliConfig, _, _ io.Writer, _ ...harness.HarnessOption) error {
@@ -218,6 +218,7 @@ func TestPrintModeWarnsServeOnlyFlags(t *testing.T) {
 }
 
 func TestRootCmdListModels(t *testing.T) {
+	isolateConfig(t, "")
 	cmd := newRootCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -226,8 +227,38 @@ func TestRootCmdListModels(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("--list-models: %v", err)
 	}
-	if !strings.Contains(out.String(), "anthropic/") {
-		t.Errorf("expected model list, got:\n%s", out.String())
+	if !strings.Contains(out.String(), "alpha") || !strings.Contains(out.String(), "beta") {
+		t.Errorf("expected the declared models, got:\n%s", out.String())
+	}
+}
+
+// TestRootCmdProviderFlag proves --provider reaches the registry: it
+// repoints a provider the file already declares, and the model bound to
+// that provider picks up the new endpoint.
+func TestRootCmdProviderFlag(t *testing.T) {
+	isolateConfig(t, "")
+
+	orig := runPrintFn
+	t.Cleanup(func() { runPrintFn = orig })
+	runPrintFn = func(_ context.Context, _ *cliConfig, _, _ io.Writer, _ ...harness.HarnessOption) error {
+		return nil
+	}
+
+	cmd := newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"-p", "hi", "--provider",
+		`{"name":"local","type":"ollama","url":"http://box:11434","api_key":"sk-flag"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	rm, err := models.resolve("alpha")
+	if err != nil {
+		t.Fatalf("resolve alpha: %v", err)
+	}
+	if rm.provider.URL != "http://box:11434" || rm.provider.APIKey != "sk-flag" {
+		t.Errorf("--provider did not reach the registry: %+v", rm.provider)
 	}
 }
 
@@ -255,14 +286,33 @@ func TestRootCmdRejectsBadFlags(t *testing.T) {
 	}
 }
 
-// TestRootCmdModelPrecedence proves the effective model order:
-// --model flag > TENZING_MODEL env > tenzing.yaml model: >
-// tenzing.yaml models.default > compiled default.
-func TestRootCmdModelPrecedence(t *testing.T) {
-	glm := modelKey(pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition).Provider, pkgmodels.Ollama_GLM5_2_Cloud.GetName())
-	qwen := modelKey(pkgmodels.Ollama_Qwen3_5_9B.(common.ModelDefinition).Provider, pkgmodels.Ollama_Qwen3_5_9B.GetName())
-	qwenBig := modelKey(pkgmodels.Ollama_Qwen3_5_35B.(common.ModelDefinition).Provider, pkgmodels.Ollama_Qwen3_5_35B.GetName())
+// testConfigYAML is a minimal complete config: one provider, one model.
+// Every root-command test needs one now — there is no compiled-in model set
+// to fall back on.
+const testConfigYAML = "providers:\n" +
+	"  - name: local\n    type: ollama\n    url: http://localhost:11434\n" +
+	"models:\n" +
+	"  - name: alpha\n    provider: local\n    model_name: glm-5.3\n" +
+	"  - name: beta\n    provider: local\n    model_name: qwen3\n"
 
+// isolateConfig points TENZING_CONFIG at a minimal complete config and
+// redirects the per-user fallback, so a root-command test never reads (or
+// is rescued by) the developer's own tenzing.yaml. Returns the path.
+func isolateConfig(t *testing.T, extra string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tenzing.yaml")
+	if err := os.WriteFile(path, []byte(testConfigYAML+"model: alpha\n"+extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TENZING_CONFIG", path)
+	redirectUserConfig(t)
+	t.Cleanup(func() { models = emptyRegistry() })
+	return path
+}
+
+// TestRootCmdModelPrecedence proves the effective model order:
+// --model flag > tenzing.yaml model:. There is no third source.
+func TestRootCmdModelPrecedence(t *testing.T) {
 	write := func(content string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "tenzing.yaml")
@@ -271,29 +321,28 @@ func TestRootCmdModelPrecedence(t *testing.T) {
 		}
 		return path
 	}
-	defaultOnly := write("models:\n  default: " + qwenBig + "\n")
-	modelAndDefault := write("model: " + qwen + "\nmodels:\n  default: " + qwenBig + "\n")
+	withModel := write(testConfigYAML + "model: beta\n")
+	noModel := write(testConfigYAML)
 
 	tests := []struct {
 		name      string
 		args      []string
-		env       string // TENZING_MODEL; "" = unset
 		config    string // TENZING_CONFIG; "" = absent file
 		wantModel string
+		wantErr   string
 	}{
-		{"flag beats env and file", []string{"-p", "hi", "--model", glm}, qwen, defaultOnly, glm},
-		{"env beats file default", []string{"-p", "hi"}, qwen, defaultOnly, qwen},
-		{"file model beats file models.default", []string{"-p", "hi"}, "", modelAndDefault, qwen},
-		{"file models.default beats compiled", []string{"-p", "hi"}, "", defaultOnly, qwenBig},
-		{"compiled default", []string{"-p", "hi"}, "", "", glm},
+		{name: "flag beats file", args: []string{"-p", "hi", "--model", "alpha"}, config: withModel, wantModel: "alpha"},
+		{name: "file model applies", args: []string{"-p", "hi"}, config: withModel, wantModel: "beta"},
+		{name: "no model anywhere errors", args: []string{"-p", "hi"}, config: noModel, wantErr: "no model selected"},
+		{name: "no config file errors", args: []string{"-p", "hi"}, wantErr: "tenzing init"},
+		{name: "undeclared model errors", args: []string{"-p", "hi", "--model", "nope"}, config: withModel, wantErr: "not declared in models"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TENZING_MODEL", tt.env)
 			t.Setenv("TENZING_CONFIG", tt.config)
-			// Isolate the ~/.config/tenzing fallback: without this the
-			// developer's own user config would satisfy the "no file" cases.
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			// Isolate the per-user config fallback: without this the
+			// developer's own user config would satisfy the "no file" case.
+			redirectUserConfig(t)
 			t.Cleanup(func() { models = emptyRegistry() })
 
 			orig := runPrintFn
@@ -308,7 +357,14 @@ func TestRootCmdModelPrecedence(t *testing.T) {
 			cmd.SetOut(&bytes.Buffer{})
 			cmd.SetErr(&bytes.Buffer{})
 			cmd.SetArgs(tt.args)
-			if err := cmd.Execute(); err != nil {
+			err := cmd.Execute()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if got == nil {
@@ -333,10 +389,10 @@ func TestMergeConfigFile(t *testing.T) {
 	t.Run("file fills unset fields", func(t *testing.T) {
 		cfg := &cliConfig{Port: 8080, NexusConfig: "nexus.yaml"}
 		mergeConfigFile(cfg, cfgfile.File{
-			SubagentModel:   "ollama/sub",
-			AdvisorModel:    "ollama/adv",
+			SubagentModel:   "sub",
+			AdvisorModel:    "adv",
 			AdvisorNudge:    3,
-			MaxTokens:       500,
+			MaxTurnTokens:   500,
 			MaxIterations:   9,
 			MaxWallClock:    dur(10 * time.Minute),
 			SubagentDepth:   intp(0),
@@ -344,18 +400,16 @@ func TestMergeConfigFile(t *testing.T) {
 			Thinking:        boolp(true),
 			ReadOnly:        true,
 			SystemFile:      "sys.md",
-			BaseURL:         "http://box:11434",
-			APIKey:          "sk-file",
 			Port:            intp(9090),
 			NexusConfig:     "nx.yaml",
 			Debug:           true,
 			MCPServers:      []cfgfile.MCPServer{{Name: "fs", Command: "npx", Args: []string{"-y"}}},
 		}, changedNone, presentNone)
 
-		if cfg.SubagentModel != "ollama/sub" || cfg.AdvisorModel != "ollama/adv" || cfg.AdvisorNudge != 3 {
+		if cfg.SubagentModel != "sub" || cfg.AdvisorModel != "adv" || cfg.AdvisorNudge != 3 {
 			t.Errorf("model fields not merged: %+v", cfg)
 		}
-		if cfg.MaxTokens != 500 || cfg.MaxIterations != 9 || cfg.MaxWallClock != 10*time.Minute {
+		if cfg.MaxTurnTokens != 500 || cfg.MaxIterations != 9 || cfg.MaxWallClock != 10*time.Minute {
 			t.Errorf("budget fields not merged: %+v", cfg)
 		}
 		if cfg.SubagentDepth != 0 || !cfg.SubagentDepthSet {
@@ -367,7 +421,7 @@ func TestMergeConfigFile(t *testing.T) {
 		if !cfg.Thinking || !cfg.ThinkingSet {
 			t.Errorf("thinking not merged with Set marker: %+v", cfg)
 		}
-		if !cfg.ReadOnly || cfg.SystemFile != "sys.md" || cfg.BaseURL != "http://box:11434" || cfg.APIKey != "sk-file" {
+		if !cfg.ReadOnly || cfg.SystemFile != "sys.md" {
 			t.Errorf("toggle/path fields not merged: %+v", cfg)
 		}
 		if cfg.Port != 9090 || cfg.NexusConfig != "nx.yaml" || !cfg.Debug {
@@ -412,16 +466,12 @@ func TestMergeConfigFile(t *testing.T) {
 
 // TestRootCmdConfigFile drives --config end-to-end through RunE.
 func TestRootCmdConfigFile(t *testing.T) {
-	qwen := modelKey(pkgmodels.Ollama_Qwen3_5_9B.(common.ModelDefinition).Provider, pkgmodels.Ollama_Qwen3_5_9B.GetName())
-
 	t.Run("full file drives print-mode config", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tenzing.yaml")
-		content := "model: " + qwen + "\nmax_iterations: 7\nsubagent_depth: 0\nread_only: true\n" +
-			"models:\n  entries:\n    - provider: ollama\n      name: custom-from-config\n"
+		content := testConfigYAML + "model: beta\nmax_iterations: 7\nsubagent_depth: 0\nread_only: true\n"
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("TENZING_MODEL", "")
 		t.Cleanup(func() { models = emptyRegistry() })
 
 		orig := runPrintFn
@@ -442,8 +492,8 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if got == nil {
 			t.Fatal("runPrintFn was never called")
 		}
-		if got.Model != qwen {
-			t.Errorf("Model = %q, want %q", got.Model, qwen)
+		if got.Model != "beta" {
+			t.Errorf("Model = %q, want beta", got.Model)
 		}
 		if got.MaxIterations != 7 || !got.ReadOnly {
 			t.Errorf("file settings not applied: %+v", got)
@@ -451,8 +501,8 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if got.SubagentDepth != 0 || !got.SubagentDepthSet {
 			t.Errorf("subagent_depth 0 not applied: depth=%d set=%v", got.SubagentDepth, got.SubagentDepthSet)
 		}
-		if _, err := models.resolve("ollama/custom-from-config"); err != nil {
-			t.Errorf("custom model from config not registered: %v", err)
+		if _, err := models.resolve("alpha"); err != nil {
+			t.Errorf("model from config not registered: %v", err)
 		}
 	})
 
@@ -468,8 +518,7 @@ func TestRootCmdConfigFile(t *testing.T) {
 
 	t.Run("list-models includes config entries", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tenzing.yaml")
-		content := "models:\n  entries:\n    - provider: ollama\n      name: listed-model\n"
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(testConfigYAML), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { models = emptyRegistry() })
@@ -482,7 +531,7 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
-		if !strings.Contains(out.String(), "ollama/listed-model") {
+		if !strings.Contains(out.String(), "alpha") || !strings.Contains(out.String(), "glm-5.3") {
 			t.Errorf("--list-models missing config entry:\n%s", out.String())
 		}
 	})

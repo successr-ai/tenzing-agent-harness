@@ -59,6 +59,8 @@ type clientOptions struct {
 	// token bucket, MaxConcurrency bounds in-flight requests. All zero means
 	// unlimited.
 	rateLimit *ratelimit.TokenBucketConfig
+	// baseURL overrides anthropicBaseURL when non-empty.
+	baseURL string
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
@@ -76,6 +78,14 @@ func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
 		opt(o)
 	}
 	return o
+}
+
+// WithBaseURL overrides the Anthropic API endpoint. Empty keeps the
+// default; set it for a proxy or a compatible gateway.
+func WithBaseURL(url string) ClientOption {
+	return func(o *clientOptions) {
+		o.baseURL = url
+	}
 }
 
 // WithAPIKey sets the API key sent to the Anthropic API.
@@ -121,7 +131,11 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 		return nil, fmt.Errorf("anthropic: Model is required")
 	}
 
-	reqOpts := []option.RequestOption{option.WithBaseURL(anthropicBaseURL)}
+	url := opts.baseURL
+	if url == "" {
+		url = anthropicBaseURL
+	}
+	reqOpts := []option.RequestOption{option.WithBaseURL(url)}
 	if opts.apiKey != "" {
 		reqOpts = append(reqOpts, option.WithAPIKey(opts.apiKey))
 	}

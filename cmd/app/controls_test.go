@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
+
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 )
 
 // The stub-brained test harness doesn't implement the control
@@ -11,7 +12,7 @@ import (
 // happy paths are covered by harness-level tests on the default brain.
 func TestControlEndpointsErrorMapping(t *testing.T) {
 	api := newTestServer(t, &answerAgent{})
-	api.models = emptyRegistry()
+	api.models = testRegistry(t, config.ModelEntry{Name: "main", Provider: "local", ModelName: "glm-5.3"})
 
 	t.Run("model set with bad ref is 400", func(t *testing.T) {
 		in := &modelInput{}
@@ -23,7 +24,7 @@ func TestControlEndpointsErrorMapping(t *testing.T) {
 
 	t.Run("model set on unsupported brain is conflict", func(t *testing.T) {
 		in := &modelInput{}
-		in.Body.Model = modelKey(defaultModel.Provider, defaultModel.Name)
+		in.Body.Model = "main"
 		if _, err := api.handleModelSet(context.Background(), nil, in); err == nil {
 			t.Fatal("stub brain cannot switch models; expected error")
 		}
@@ -60,12 +61,12 @@ func TestControlEndpointsErrorMapping(t *testing.T) {
 		}
 		found := false
 		for _, ref := range out.Body.Models {
-			if strings.HasPrefix(ref, "ollama/") {
+			if ref == "main" {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("builtin ollama models missing from list: %v", out.Body.Models)
+			t.Errorf("declared model missing from list: %v", out.Body.Models)
 		}
 	})
 }

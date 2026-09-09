@@ -3,125 +3,111 @@ package main
 import (
 	"fmt"
 	"log/slog"
-	"os"
+	"maps"
+	"slices"
 	"sync"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	protoanthropic "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/anthropic"
 	protoollama "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ollama"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
 )
 
-// Default OpenAI-compatible endpoints for providers without a native
-// protocol package. Overridable per provider via models.yaml base_url.
-const (
-	cerebrasBaseURL   = "https://api.cerebras.ai/v1"
-	lightningBaseURL  = "https://lightning.ai/api/v1"
-	openRouterBaseURL = "https://openrouter.ai/api/v1"
-)
+// maxCompletionTokensKey is the one Extra key that is not a request field.
+// The OpenAI-compatible client renames the token-limit parameter rather
+// than adding one, so it maps to a client option; current OpenAI models
+// reject the un-renamed max_tokens.
+const maxCompletionTokensKey = "max_completion_tokens"
 
-// providerEnvKeys maps each provider to the conventional env var holding
-// its API key. A missing key is not an error here — providers that require
-// auth fail on the first request instead (and local Ollama needs none).
-var providerEnvKeys = map[string]string{
-	"anthropic":  "ANTHROPIC_API_KEY",
-	"cerebras":   "CEREBRAS_API_KEY",
-	"lightning":  "LIGHTNING_API_KEY",
-	"ollama":     "OLLAMA_API_KEY",
-	"openai":     "OPENAI_API_KEY",
-	"openrouter": "OPENROUTER_API_KEY",
-}
+// buildLLM constructs a protocol client for a resolved model. Endpoint and
+// key come from the model's provider entry and nowhere else: tenzing.yaml
+// declares both, so there is no env-var fallback. A provider's URL may be
+// empty only for anthropic and ollama, whose clients carry their vendor's
+// endpoint; the client options treat empty as "keep the default".
+func buildLLM(rm resolvedModel) (common.LLM, error) {
+	def, prov := rm.def, rm.provider
+	key, url := prov.APIKey, prov.URL
 
-// buildLLM constructs a protocol client for the model definition. apiKey
-// wins when non-empty (--api-key), else the provider's conventional env var.
-// baseURL overrides the provider default endpoint when non-empty
-// (--base-url or models.yaml base_url).
-func buildLLM(def common.ModelDefinition, baseURL string, apiKey string) (common.LLM, error) {
-	key := apiKey
-	if key == "" {
-		key = os.Getenv(providerEnvKeys[def.Provider])
-	}
-
-	compat := func(name string, defaultURL string, extra ...openai_compat.ClientOption) (common.LLM, error) {
-		url := baseURL
-		if url == "" {
-			url = defaultURL
-		}
-		opts := append([]openai_compat.ClientOption{
-			openai_compat.WithName(name),
-			openai_compat.WithAPIKey(key),
-			openai_compat.WithBaseURL(url),
-		}, extra...)
-		if def.ReasoningEffort != "" {
-			opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
-		}
-		return openai_compat.NewClient(def, opts...)
-	}
-
-	switch def.Provider {
+	switch prov.Type {
 	case "anthropic":
 		if def.ReasoningEffort != "" {
 			slog.Warn("reasoning_effort ignored: provider takes a numeric thinking budget, not tiers",
-				"model", def.Name, "provider", def.Provider, "reasoning_effort", def.ReasoningEffort)
+				"model", def.Name, "provider", prov.Name, "reasoning_effort", def.ReasoningEffort)
 		}
-		return protoanthropic.NewClient(def, protoanthropic.WithAPIKey(key))
+		return protoanthropic.NewClient(def,
+			protoanthropic.WithAPIKey(key),
+			protoanthropic.WithBaseURL(url))
 	case "ollama":
-		opts := []protoollama.ClientOption{protoollama.WithAPIKey(key)}
-		if baseURL != "" {
-			opts = append(opts, protoollama.WithBaseURL(baseURL))
+		opts := []protoollama.ClientOption{
+			protoollama.WithAPIKey(key),
+			protoollama.WithBaseURL(url),
 		}
 		if def.ReasoningEffort != "" {
 			opts = append(opts, protoollama.WithReasoningEffort(def.ReasoningEffort))
 		}
 		return protoollama.NewClient(def, opts...)
-	case "openai":
-		return compat("openai", "", openai_compat.WithMaxCompletionTokens())
-	case "cerebras":
-		return compat("cerebras", cerebrasBaseURL)
-	case "lightning":
-		return compat("lightning", lightningBaseURL)
-	case "openrouter":
-		// Sort candidate providers by throughput; see
-		// https://openrouter.ai/docs/guides/routing/provider-selection#provider-sorting
-		return compat("openrouter", openRouterBaseURL,
-			openai_compat.WithExtraField("provider.sort", "throughput"))
+	case config.DefaultProviderType:
+		// The provider's own name, not its type: several openai_compat
+		// backends can be declared at once, and "groq" is more use in a log
+		// line than "openai_compat" repeated.
+		opts := []openai_compat.ClientOption{
+			openai_compat.WithName(prov.Name),
+			openai_compat.WithAPIKey(key),
+			openai_compat.WithBaseURL(url),
+		}
+		if def.ReasoningEffort != "" {
+			opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
+		}
+		return openai_compat.NewClient(def, append(opts, extraOptions(prov.Extra)...)...)
 	default:
 		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, common.ErrUnknownProvider)
 	}
 }
 
+// extraOptions turns a provider's extra: map into client options: the
+// reserved max_completion_tokens key becomes the rename option, everything
+// else is injected verbatim into each request body by dotted path. Keys are
+// applied in sorted order — map iteration is random and the client keeps
+// extras as an ordered slice, so unsorted iteration would make two
+// identical configs build subtly different clients.
+func extraOptions(extra map[string]any) []openai_compat.ClientOption {
+	var opts []openai_compat.ClientOption
+	for _, k := range slices.Sorted(maps.Keys(extra)) {
+		v := extra[k]
+		if k == maxCompletionTokensKey {
+			if on, _ := v.(bool); on {
+				opts = append(opts, openai_compat.WithMaxCompletionTokens())
+			}
+			continue
+		}
+		opts = append(opts, openai_compat.WithExtraField(k, v))
+	}
+	return opts
+}
+
 // llmCache builds LLM clients on demand via buildLLM and reuses one client
-// per distinct provider/model/baseURL/reasoning-effort, so model switch-back
-// is free and roles sharing a model share a client (effort is in the key
-// because inline model refs can name the same model at different tiers). Base URLs come from the process-wide
-// model registry (models.yaml base_url entries).
+// per distinct provider/model/reasoning-effort, so model switch-back is free
+// and roles sharing a model share a client (effort is in the key because
+// inline model refs can name the same model at different tiers).
 type llmCache struct {
 	mu      sync.Mutex
 	clients map[string]common.LLM
-	// CLI overrides, set once at startup from --base-url / --api-key.
-	// baseURL wins over models.yaml and provider defaults; apiKey wins over
-	// the provider env vars.
-	baseURL string
-	apiKey  string
 }
 
 // llms is the process-wide client cache, alongside the models registry.
 var llms = &llmCache{clients: make(map[string]common.LLM)}
 
-func (c *llmCache) get(def common.ModelDefinition) (common.LLM, error) {
+func (c *llmCache) get(rm resolvedModel) (common.LLM, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	url := c.baseURL
-	if url == "" {
-		url = models.baseURLs[def.Provider]
-	}
-	cacheKey := fmt.Sprintf("%s|%s|%s|%s", def.Provider, def.Name, url, def.ReasoningEffort)
+	cacheKey := fmt.Sprintf("%s|%s|%s", rm.provider.Name, rm.def.Name, rm.def.ReasoningEffort)
 	if llm, ok := c.clients[cacheKey]; ok {
 		return llm, nil
 	}
-	llm, err := buildLLM(def, url, c.apiKey)
+	llm, err := buildLLM(rm)
 	if err != nil {
-		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, err)
+		return nil, fmt.Errorf("build LLM for %s: %w", rm.def.Name, err)
 	}
 	c.clients[cacheKey] = llm
 	return llm, nil

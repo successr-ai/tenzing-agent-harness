@@ -13,23 +13,32 @@ import (
 // a file; missing there is fine (builtins and flags only).
 const defaultConfigPath = "tenzing.yaml"
 
-// userConfigPath is the per-user fallback probed when there is no
-// ./tenzing.yaml: $XDG_CONFIG_HOME/tenzing/tenzing.yaml, defaulting to
-// ~/.config/tenzing/tenzing.yaml. Returns "" when neither var resolves.
-func userConfigPath() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
+// userConfigDir is the per-user tenzing directory, <UserConfigDir>/tenzing:
+// ~/Library/Application Support/tenzing on macOS, $XDG_CONFIG_HOME/tenzing
+// (default ~/.config/tenzing) elsewhere. It is the single home for the
+// per-user tenzing.yaml, settings.json, trust.json, AGENTS.md and sessions/.
+// Returns "" when the base dir is unavailable.
+func userConfigDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return ""
 	}
-	return filepath.Join(dir, "tenzing", defaultConfigPath)
+	return filepath.Join(base, "tenzing")
+}
+
+// userConfigPath is the per-user fallback probed when there is no
+// ./tenzing.yaml: <UserConfigDir>/tenzing/tenzing.yaml. Returns "" when the
+// base dir is unavailable.
+func userConfigPath() string {
+	dir := userConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, defaultConfigPath)
 }
 
 // resolveConfigPath picks the tenzing.yaml location: --config flag >
-// TENZING_CONFIG env > ./tenzing.yaml > ~/.config/tenzing/tenzing.yaml.
+// TENZING_CONFIG env > ./tenzing.yaml > <UserConfigDir>/tenzing/tenzing.yaml.
 // explicit reports whether the user named the path (flag or env) — a missing
 // file is then a startup error instead of a silent skip. The two probed
 // paths stay non-explicit: absent is fine for both.
@@ -53,7 +62,7 @@ func resolveConfigPath(flagValue string, flagChanged bool) (path string, explici
 // resolveFilePaths rebases tenzing.yaml's path-valued keys onto the config
 // file's own directory, so a config living outside the working directory can
 // name files that sit beside it (e.g. system_file: SYSTEM.md next to a global
-// ~/.config/tenzing/tenzing.yaml). Absolute paths are left alone. This applies
+// <UserConfigDir>/tenzing/tenzing.yaml). Absolute paths are left alone. This applies
 // only to values read from the file — CLI path flags stay cwd-relative, like
 // every other shell argument.
 //
@@ -101,14 +110,12 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	setStr("blackboard-model", &cfg.BlackboardModel, f.BlackboardModel)
 	setStr("advisor-model", &cfg.AdvisorModel, f.AdvisorModel)
 	setStr("system", &cfg.SystemFile, f.SystemFile)
-	setStr("base-url", &cfg.BaseURL, f.BaseURL)
-	setStr("api-key", &cfg.APIKey, f.APIKey)
 
 	if f.AdvisorNudge != 0 && !changed("advisor-nudge") {
 		cfg.AdvisorNudge = f.AdvisorNudge
 	}
-	if f.MaxTokens != 0 && !changed("max-tokens") {
-		cfg.MaxTokens = f.MaxTokens
+	if f.MaxTurnTokens != 0 && !changed("max-turn-tokens") {
+		cfg.MaxTurnTokens = f.MaxTurnTokens
 	}
 	if f.MaxIterations != 0 && !changed("max-iterations") {
 		cfg.MaxIterations = f.MaxIterations

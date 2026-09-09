@@ -53,3 +53,7 @@ docs/todo
 
 .tenzing-agent-*.log
 tenzing.yaml
+
+# defaults/ ships embedded in the binary for `tenzing init` (the bare
+# tenzing.yaml rule above would otherwise ignore it)
+!cmd/app/defaults/tenzing.yaml

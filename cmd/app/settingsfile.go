@@ -29,18 +29,19 @@ type settingsFile struct {
 }
 
 // userSettingsPath is the per-user fallback probed when there is no
-// ./settings.json: always ~/.config/tenzing/settings.json (XDG_CONFIG_HOME
-// is deliberately not consulted). Returns "" when the home dir is unknown.
+// ./settings.json: <UserConfigDir>/tenzing/settings.json, the same directory
+// the per-user tenzing.yaml is probed in. Returns "" when the base dir is
+// unavailable.
 func userSettingsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := userConfigDir()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "tenzing", defaultSettingsPath)
+	return filepath.Join(dir, defaultSettingsPath)
 }
 
 // resolveSettingsPath picks the settings.json location: --settings flag >
-// TENZING_SETTINGS env > ./settings.json > ~/.config/tenzing/settings.json.
+// TENZING_SETTINGS env > ./settings.json > <UserConfigDir>/tenzing/settings.json.
 // explicit reports whether the user named the path — a missing file is then
 // a startup error instead of a silent skip; the two probed paths stay
 // non-explicit.

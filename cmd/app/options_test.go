@@ -60,7 +60,7 @@ func TestHarnessOptions(t *testing.T) {
 		wantErr bool
 	}{
 		{"empty config", cliConfig{}, 0, false},
-		{"budgets only", cliConfig{MaxTokens: 1000, MaxIterations: 5, MaxWallClock: time.Minute}, 1, false},
+		{"budgets only", cliConfig{MaxTurnTokens: 1000, MaxIterations: 5, MaxWallClock: time.Minute}, 1, false},
 		{"toggles", cliConfig{NoPermissions: true, SubagentDepth: 2, SubagentDepthSet: true}, 2, false},
 		{"dangerously skip permissions", cliConfig{SkipPermissions: true}, 1, false},
 		{"approval timeout", cliConfig{ApprovalTimeout: 30 * time.Second, ApprovalTimeoutSet: true}, 1, false},

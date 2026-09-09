@@ -11,11 +11,14 @@ import (
 )
 
 // resolveSettingsPath's fallback chain: --settings > TENZING_SETTINGS >
-// ./settings.json > ~/.config/tenzing/settings.json.
+// ./settings.json > <UserConfigDir>/tenzing/settings.json.
 func TestResolveSettingsPath(t *testing.T) {
-	writeUserSettings := func(t *testing.T, home string) string {
+	writeUserSettings := func(t *testing.T) string {
 		t.Helper()
-		dir := filepath.Join(home, ".config", "tenzing")
+		dir := userConfigDir()
+		if dir == "" {
+			t.Fatal("userConfigDir() is empty")
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -65,8 +68,7 @@ func TestResolveSettingsPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
-			home := t.TempDir()
-			t.Setenv("HOME", home)
+			redirectUserConfig(t)
 			t.Setenv("TENZING_SETTINGS", tt.env)
 
 			if tt.localSettings {
@@ -76,7 +78,7 @@ func TestResolveSettingsPath(t *testing.T) {
 			}
 			var user string
 			if tt.userSettings {
-				user = writeUserSettings(t, home)
+				user = writeUserSettings(t)
 			}
 
 			path, explicit := resolveSettingsPath(tt.flagValue, tt.flagChanged)
@@ -90,15 +92,21 @@ func TestResolveSettingsPath(t *testing.T) {
 	}
 }
 
-// The user fallback is ~/.config/tenzing only; XDG_CONFIG_HOME is ignored.
-func TestUserSettingsPathIgnoresXDG(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+// settings.json and tenzing.yaml share one per-user directory: whatever
+// os.UserConfigDir() resolves to, plus "tenzing".
+func TestUserSettingsPathSharesConfigDir(t *testing.T) {
+	redirectUserConfig(t)
 
-	want := filepath.Join(home, ".config", "tenzing", defaultSettingsPath)
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(base, "tenzing", defaultSettingsPath)
 	if got := userSettingsPath(); got != want {
 		t.Errorf("userSettingsPath() = %q, want %q", got, want)
+	}
+	if got, want := filepath.Dir(userSettingsPath()), filepath.Dir(userConfigPath()); got != want {
+		t.Errorf("settings dir = %q, config dir = %q; want the same", got, want)
 	}
 }
 

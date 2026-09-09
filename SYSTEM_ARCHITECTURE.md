@@ -106,7 +106,7 @@ cmd/app/options.go                      cliConfig struct + harnessOptions(cfg) �
 cmd/app/configmerge.go                  tenzing.yaml merge layer — resolveConfigPath + mergeConfigFile (flag > env > file > default)
 cmd/app/container.go                    AppContainer — config, logging, trust + project config, agent server + HTTP server wiring
 cmd/app/print.go                        Print mode — one-shot turn (with @path.png image args), text/JSONL output, exit codes
-cmd/app/models.go                       Model registry — tenzing.yaml models: section → registry (buildRegistry, resolveModel, modelKey, modelList, --list-models)
+cmd/app/models.go                       Model registry — tenzing.yaml providers:/models: → registry (buildRegistry, resolveModel, mergeProviderFlags, modelList, --list-models)
 cmd/app/costs.go                        costTracker — token + USD accounting from LLMResponseEvents (pricing from tenzing.yaml model costs)
 cmd/app/trust.go                        Project trust gate — trust.json persistence, resolveProjectTrust/setProjectTrust
 cmd/app/projectconfig.go                Drop-in config — SYSTEM.md/APPEND_SYSTEM.md overrides + prompt-template dirs, trust-gated
@@ -116,7 +116,7 @@ cmd/app/server.go                       agentServer — routes (/query, /cancel,
 cmd/app/index.go                        Embedded chat UI (single-page HTML served at /; image attachments, live cost display, --debug-gated verbosity, Markdown-rendered answers)
 
 pkg/common/                              Canonical types: LLM/Model/ModelDefinition, chat types, errors
-pkg/models/                              Standard model catalog (convenience only; Standard() aggregate)
+pkg/models/                              Standard model catalog (library consumers only; cmd/app does not read it)
 pkg/providers/
 ├── protocols/                          anthropic, ollama, openai_compat protocol clients (NewClient(model, opts...) → common.LLM)
 ├── protocols/ratelimit/                TokenBucket, Semaphore, Wrap, RetryBackoff
@@ -236,12 +236,12 @@ internal/
 
 LLM provider layer: in-repo (pkg/)
 ├── pkg/common/                         LLM interface + canonical message types
-├── pkg/models/                         Standard model definitions per provider
+├── pkg/models/                         Standard model definitions per provider (library consumers only)
 └── pkg/providers/
     ├── protocols/anthropic/            Native Anthropic SDK client
     ├── protocols/ollama/               Native Ollama /api/* client (slog diagnostics)
     ├── protocols/openai_compat/        Shared OpenAI-compatible base + 429 retry
-    │                                   (OpenAI, Cerebras, Lightning, OpenRouter)
+    │                                   (OpenAI, OpenRouter, any compatible endpoint)
     └── protocols/ratelimit/            TokenBucket, Semaphore, Wrap, RetryBackoff
 ```
 
@@ -711,26 +711,26 @@ All flags parse into a single `cliConfig` struct (`cmd/app/options.go`); `harnes
 
 - **Mode:** `-p/--prompt`, `--output-format` (`text` default, or `json` for JSONL events), `--list-models`
 - **Models:** `--model` (default `ollama/glm-5.2:cloud`), `--subagent-model`, `--blackboard-model`, `--advisor-model` (enables the advisor tool + write-gate; `--advisor-nudge N` optionally reminds an unconsulted executor from iteration N) — resolved via `cmd/app/models.go`'s registry (see "Model registry" below)
-- **Budgets:** `--max-tokens`, `--max-iterations`, `--max-wall-clock`
+- **Budgets:** `--max-turn-tokens`, `--max-iterations`, `--max-wall-clock`
 - **Toggles:** `--subagent-depth` (default 1), `--approval-timeout`, `--no-permissions`, `--read-only` (deny tools not marked read-only, no approval prompts), `--thinking` (tri-state: only applied when explicitly passed), `--no-session`, `--no-context-files`
 - **Prompt / sessions / trust:** `--system <file>` (file contents replace the system prompt; wins over SYSTEM.md overrides), `--resume <id>`, `-c/--continue` (latest session for cwd; mutually exclusive with `--resume`, requires persistence), `--trust` (treat cwd as trusted this run, not persisted), `--timeout` (print-mode turn deadline; warned-and-ignored in serve mode)
 - **Wiring:** `--mcp-server` (repeatable, `name=command arg1 arg2`), `--conversation-id`
 - **Serve-only:** `--port` (default 8080, env `SERVER_PORT`), `--nexus-config` (default `nexus.yaml`, env `NEXUS_CONFIG`) — unused by print mode; passing them with `-p` prints a stderr warning
-- **Shared, not serve-only:** `--debug` (env `LOG_DEBUG`) — same effect in both modes: raises the log file (never stdout) to trace level and switches it to a fresh timestamped filename (`setupLogging`, called by both `runPrint` and `NewAppContainer`). Log location differs by mode: serve logs to the cwd; print logs to `os.UserCacheDir()/tenzing/` (`printLogDir`, temp-dir fallback) so headless runs don't sprinkle log files wherever they run
+- **Shared, not serve-only:** `--debug` (env `LOG_DEBUG`) — same effect in both modes: raises the log file (never stdout) to trace level and switches it to a fresh timestamped filename (`setupLogging`, called by both `runPrint` and `NewAppContainer`). Both modes log to `<UserConfigDir>/tenzing/log/` (`logDir` in `cmd/app/print.go`, temp-dir fallback), so runs from arbitrary directories don't sprinkle log files wherever they run
 
 `--subagent-depth`, `--approval-timeout`, and `--thinking` have "unset vs. zero" semantics (0/false are valid explicit values), so `markSetFlags` records cobra's `Changed()` into `cfg.SubagentDepthSet`/`ApprovalTimeoutSet`/`ThinkingSet`; `harnessOptions` only applies them when set.
 
 ### Config file (`tenzing.yaml`, `internal/config`)
 
-One YAML file for every durable setting — models (registry included; replaces the former `models.yaml`), advisor, subagent, budgets, permissions, MCP servers, serve settings. `internal/config` owns the schema (`config.File`) and `Load`: strict decoding (unknown keys are startup errors), Go-duration strings, pointer fields for scalars whose zero is a meaningful value (`subagent_depth`, `approval_timeout`, `thinking`, `port`) so the merge can distinguish "set to zero" from "omitted". Located via `--config` > `TENZING_CONFIG` env > `./tenzing.yaml` (`resolveConfigPath` in `cmd/app/configmerge.go`); a missing file at the default path is a clean skip, at an explicitly named path a startup error.
+One YAML file for every durable setting — providers and models (the registry lives here; replaces the former `models.yaml`), advisor, subagent, budgets, permissions, MCP servers, serve settings. The file is **required**: nothing is compiled in, so a missing one is a startup error pointing at `tenzing init`. `internal/config` owns the schema (`config.File`) and `Load`: strict decoding (unknown keys are startup errors), Go-duration strings, pointer fields for scalars whose zero is a meaningful value (`subagent_depth`, `approval_timeout`, `thinking`, `port`) so the merge can distinguish "set to zero" from "omitted". Located via `--config` > `TENZING_CONFIG` env > `./tenzing.yaml` (`resolveConfigPath` in `cmd/app/configmerge.go`); missing is a startup error either way — named paths report the path, the probed default points at `tenzing init`. Removed keys carry migration hints (`migrationHint`): `models.entries`/`models.default` → the top-level `models:` list, `base_url`/`api_key` → `providers[]`.
 
 ### Model registry (`cmd/app/models.go`)
 
-`buildRegistry(config.ModelsSection)` (pure, no I/O — `root.go` loads tenzing.yaml and passes its `models:` section) builds the process-wide registry installed before any resolution. Entries add custom models per provider (`context_window`/`max_tokens` default 128k/32k, `vision` marks image support, `reasoning_effort` names the provider's reasoning tier — carried on `common.ModelDefinition` and translated by `buildLLM` into `reasoning_effort` (OpenAI-compatible) or the `think` level (Ollama), passed through verbatim and part of the `llms` cache key; Anthropic warns and ignores it, `base_url` becomes the provider's base URL in the app's `llms` client cache (`cmd/app/llm.go`), `cost` is USD per MTok with cache read/write defaulting to the Anthropic 0.1×/1.25× convention) and an optional `default:` ref. Resolution of a `provider/name` ref checks custom entries first, then the compiled-in set derived from `models.Standard()` (`pkg/models`) — adding a standard model there is still the only step. Effective main-model precedence: explicit `--model` > `TENZING_MODEL` env > tenzing.yaml `model:` > tenzing.yaml `models.default` > compiled default.
+`buildRegistry(providers, entries)` (pure, no I/O — `root.go` loads tenzing.yaml, merges `--provider` JSON flags over its `providers:` list by name via `mergeProviderFlags`, then passes both lists) builds the process-wide registry installed before any resolution. A **provider** is a labelled backend: `name` (unique label, referenced by models, and what the client reports itself as in logs), `type` (the wire protocol — `anthropic`, `ollama`, or `openai_compat`, defaulting to `openai_compat` when absent; any unrecognized value is a startup error, vendor names included — a hosted OpenAI-compatible API is `openai_compat` plus its `url`), `url` (required for `openai_compat`, optional for the other two whose clients know their vendor endpoint — note ollama's default is the **cloud** endpoint, not localhost), optional `api_key` (empty = no auth; `$VAR` expands from the environment), and optional `extra` (a map injected into every request body by dotted path; `openai_compat` only, ignored elsewhere, applied in sorted key order, with `max_completion_tokens` reserved as the parameter-rename client option). Declare a type twice to reach a local box and a hosted endpoint from one config. A **model** is `name` (the local alias every ref uses), `provider` (a declared provider name), `model_name` (the wire id sent to the provider), plus `context_window`/`max_response_tokens` (default 128k/32k; the latter caps one response, unlike the file's top-level `max_turn_tokens` which bounds a whole turn), `vision`, `reasoning_effort` — carried on `common.ModelDefinition` and translated by `buildLLM` into `reasoning_effort` (OpenAI-compatible) or the `think` level (Ollama), passed through verbatim and part of the `llms` cache key; Anthropic warns and ignores it — and `cost` (USD per MTok, cache read/write defaulting to the Anthropic 0.1x/1.25x convention, keyed by lowercase `model_name` because that is what `LLMResponseEvent.Model` carries). Resolution takes the alias; `provider/name` refs and the compiled-in `models.Standard()` set are gone. Effective main-model precedence: `--model` > tenzing.yaml `model:`, with no model at all a startup error.
 
 ### Setting precedence
 
-Per setting: explicit flag > env var > tenzing.yaml > default. `mergeEnv` applies the three pre-existing env vars (`SERVER_PORT`, `LOG_DEBUG`, `NEXUS_CONFIG`): an explicitly-passed flag always wins, otherwise the env var overrides the flag default. `mergeConfigFile` (`cmd/app/configmerge.go`) then fills from tenzing.yaml whatever neither flags nor env set — including the `*Set` markers for the unset-vs-zero fields, and `mcp_servers` entries appended pre-parsed to `cfg.MCPServerConfigs` (additive with `--mcp-server` flags). Two further env-only settings load via the same `Config` struct: `TENZING_MODEL` (main-model fallback, see precedence above) and `TENZING_PROJECT_TRUST` (default trust decision, see "Project config & trust" below).
+Per setting: explicit flag > env var > tenzing.yaml > default. `mergeEnv` applies the three pre-existing env vars (`SERVER_PORT`, `LOG_DEBUG`, `NEXUS_CONFIG`): an explicitly-passed flag always wins, otherwise the env var overrides the flag default. `mergeConfigFile` (`cmd/app/configmerge.go`) then fills from tenzing.yaml whatever neither flags nor env set — including the `*Set` markers for the unset-vs-zero fields, and `mcp_servers` entries appended pre-parsed to `cfg.MCPServerConfigs` (additive with `--mcp-server` flags). One further env-only setting loads via the same `Config` struct: `TENZING_PROJECT_TRUST` (default trust decision, see "Project config & trust" below).
 
 ### Project config & trust
 
@@ -777,7 +777,7 @@ Cancellation classification: a `loopErr` that unwraps to `context.Canceled` is r
 | `POST /resume` | `{conversation_id}` → `Harness.Resume` — loads a recorded conversation over the live one, resets the cost tracker (409 mid-turn) |
 | `POST /compact` | `{instructions?}` → `Harness.Compact` (409 mid-turn) |
 | `POST /thinking` | `{enabled}` → `Harness.SetThinking` |
-| `POST /model` | `{model}` (provider/name ref, resolved via the registry) → `llms.get` → `Harness.SetLLM` |
+| `POST /model` | `{model}` (a declared model alias, or inline JSON; resolved via the registry) → `llms.get` → `Harness.SetLLM` |
 | `GET /models` | Current model + every resolvable ref (custom + builtin) |
 | `GET /stats` | `costStats`: per-model calls/tokens (incl. cache read/creation) and USD cost — `cost_usd` is null for unpriced models, and the total goes null if any used model is unpriced |
 | `GET /trust`, `POST /trust` | Read / persist the trust decision for the server's cwd |
@@ -825,7 +825,7 @@ Three nexus event types are forwarded over SSE by `agentServer.forwardEvents`, m
 
 ## 18. Provider Layer
 
-Lives in-repo under `pkg/`. `pkg/common` holds the canonical types; `pkg/providers/protocols/` holds the protocol clients, each `NewClient(model common.Model, opts...) (common.LLM, error)`: `anthropic` (native SDK), `ollama` (native `/api/*` endpoints), and `openai_compat` (OpenAI, Cerebras, Lightning, OpenRouter via `WithBaseURL`). Models come from `pkg/models` or any `common.Model` implementation. API keys/base URLs are caller-supplied via client options — nothing in `pkg/` reads env vars. The harness never constructs clients; `cmd/app/llm.go` is the app-side factory (`buildLLM` switches on provider, resolves the conventional env vars `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama keyless, `OLLAMA_API_KEY` optional) with a process-wide `llms` cache. Client-side limiting is uniform across protocols and internal to `NewClient`: `WithRateLimit(ratelimit.TokenBucketConfig)` (API rate) and `WithMaxConcurrency(n)` (concurrency) are independent options, both off by default — callers never call `ratelimit.Wrap` themselves.
+Lives in-repo under `pkg/`. `pkg/common` holds the canonical types; `pkg/providers/protocols/` holds the protocol clients, each `NewClient(model common.Model, opts...) (common.LLM, error)`: `anthropic` (native SDK), `ollama` (native `/api/*` endpoints), and `openai_compat` (OpenAI, OpenRouter, or any OpenAI-compatible endpoint via `WithBaseURL`). Models come from `pkg/models` or any `common.Model` implementation. API keys/base URLs are caller-supplied via client options — nothing in `pkg/` reads env vars. The harness never constructs clients; `cmd/app/llm.go` is the app-side factory (`buildLLM` switches on the model's provider type — one of three: anthropic, ollama, openai_compat — and takes the url/key from that provider entry, with no env-var fallback) with a process-wide `llms` cache. The anthropic client takes `WithBaseURL` like the others, so a declared `url:` is honoured rather than ignored, and an empty one leaves each client's own default in place. Client-side limiting is uniform across protocols and internal to `NewClient`: `WithRateLimit(ratelimit.TokenBucketConfig)` (API rate) and `WithMaxConcurrency(n)` (concurrency) are independent options, both off by default — callers never call `ratelimit.Wrap` themselves.
 
 ### LLM Interface
 
@@ -842,15 +842,14 @@ type LLM interface {
 }
 ```
 
-Three protocol implementations cover the six standard providers:
+Three protocol implementations cover every provider the catalog ships:
 
 | Provider | Protocol | Notes |
 |----------|----------|-------|
 | `Anthropic` | `protocols/anthropic` (direct SDK) | Native tool use, token counting, optional rate limiting |
 | `OpenAI` | `protocols/openai_compat` | `WithMaxCompletionTokens()` |
-| `Cerebras` | `protocols/openai_compat` | `WithBaseURL` |
-| `Lightning` | `protocols/openai_compat` | `WithBaseURL` |
 | `OpenRouter` | `protocols/openai_compat` | `WithBaseURL` |
+| any other OpenAI-compatible API | `protocols/openai_compat` | `WithBaseURL` + `WithAPIKey`; no catalog entries, define the model inline |
 | `Ollama` | `protocols/ollama` (direct HTTP) | Local or Ollama Cloud |
 
 ### Message Types (provider-agnostic)

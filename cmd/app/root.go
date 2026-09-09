@@ -44,15 +44,26 @@ func newRootCmd() *cobra.Command {
 			// TENZING_CONFIG > ./tenzing.yaml). Loaded first so its models:
 			// section feeds the registry before any model resolution.
 			cfgPath, explicit := resolveConfigPath(cfg.ConfigPath, cmd.Flags().Changed("config"))
-			file, _, err := cfgfile.Load(cfgPath, explicit)
+			file, found, err := cfgfile.Load(cfgPath, explicit)
 			if err != nil {
 				return err
+			}
+			// Providers and models are declared, never compiled in, so
+			// there is nothing to run without a config file.
+			if !found {
+				return fmt.Errorf("no config file found at %s: run 'tenzing init' to write a starter tenzing.yaml", cfgPath)
 			}
 			// Path-valued keys are relative to the config file, not the cwd,
 			// so a global config can name files sitting beside it.
 			file = resolveFilePaths(file, cfgPath)
 
-			reg, err := buildRegistry(file.Models)
+			// --provider entries are merged over the file's by name, so a
+			// flag can repoint one provider without restating the rest.
+			providers, err := mergeProviderFlags(file.Providers, cfg.Providers)
+			if err != nil {
+				return err
+			}
+			reg, err := buildRegistry(providers, file.Models)
 			if err != nil {
 				return fmt.Errorf("config %s: %w", cfgPath, err)
 			}
@@ -72,18 +83,14 @@ func newRootCmd() *cobra.Command {
 				return errors.New("--output-format requires -p")
 			}
 
-			// Effective model precedence: --model flag > TENZING_MODEL env >
-			// tenzing.yaml model: > tenzing.yaml models.default >
-			// compiled-in default (the flag default).
+			// Effective model precedence: --model flag > tenzing.yaml
+			// model:. There is no third source — the config declares every
+			// model, so an unset model: has nothing to fall back to.
 			if !cmd.Flags().Changed("model") {
-				switch {
-				case os.Getenv("TENZING_MODEL") != "":
-					cfg.Model = envCfg.Model
-				case file.Model != "":
-					cfg.Model = file.Model
-				case models.defaultModel.Name != "":
-					cfg.Model = modelKey(models.defaultModel.Provider, models.defaultModel.Name)
-				}
+				cfg.Model = file.Model
+			}
+			if cfg.Model == "" {
+				return fmt.Errorf("no model selected: set model: in %s or pass --model", cfgPath)
 			}
 			// Validate the main model up front for both modes.
 			if _, err := resolveModel(cfg.Model); err != nil {
@@ -111,11 +118,6 @@ func newRootCmd() *cobra.Command {
 			}
 			applyBashRules(cfg, settingsPath, bashRules)
 
-			// Overrides for the LLM client factory: --base-url / tenzing.yaml
-			// beat provider defaults, --api-key beats provider env vars.
-			llms.baseURL = cfg.BaseURL
-			llms.apiKey = cfg.APIKey
-
 			if cfg.Prompt != "" {
 				// Warns on explicit CLI flags only — SERVER_PORT/NEXUS_CONFIG
 				// env vars merged above stay silent by design (ambient env
@@ -134,20 +136,22 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
+	cmd.AddCommand(newInitCmd())
+
 	fl := cmd.Flags()
-	fl.StringVar(&cfg.SettingsPath, "settings", "", "JSON per-command bash policy (default ./settings.json, then ~/.config/tenzing/settings.json; env TENZING_SETTINGS)")
-	fl.StringVar(&cfg.ConfigPath, "config", "", "YAML config file (default ./tenzing.yaml, then ~/.config/tenzing/tenzing.yaml; env TENZING_CONFIG); CLI flags and env vars override its values")
+	fl.StringVar(&cfg.SettingsPath, "settings", "", "JSON per-command bash policy (default ./settings.json, then <user config dir>/tenzing/settings.json; env TENZING_SETTINGS)")
+	fl.StringVar(&cfg.ConfigPath, "config", "", "YAML config file (default ./tenzing.yaml, then <user config dir>/tenzing/tenzing.yaml; env TENZING_CONFIG); CLI flags and env vars override its values")
 	fl.StringVarP(&cfg.Prompt, "prompt", "p", "", "run one headless agent turn with this prompt, then exit (@path.png args attach images)")
 	fl.StringVar(&cfg.OutputFormat, "output-format", "text", "print-mode output: text (final answer) or json (JSONL events)")
-	fl.BoolVar(&cfg.ListModels, "list-models", false, "print known models and exit")
+	fl.BoolVar(&cfg.ListModels, "list-models", false, "print the models declared in the config and exit")
 
-	fl.StringVar(&cfg.Model, "model", modelKey(defaultModel.Provider, defaultModel.Name), `main model as provider/name (see --list-models) or inline JSON, e.g. '{"provider":"openrouter","name":"x","context_window":128000,"max_tokens":32768}' (model flags all accept both forms)`)
+	fl.StringVar(&cfg.Model, "model", "", `main model, named by a models: entry (see --list-models) or inline JSON naming a declared provider, e.g. '{"provider":"openrouter","model_name":"vendor/x","context_window":128000}' (model flags all accept both forms)`)
 	fl.StringVar(&cfg.SubagentModel, "subagent-model", "", "model for subagents (default: main model)")
 	fl.StringVar(&cfg.BlackboardModel, "blackboard-model", "", "model for blackboard llm_query (default: main model)")
 	fl.StringVar(&cfg.AdvisorModel, "advisor-model", "", "model for the advisor tool; setting it enables the advisor and its write-gate")
 	fl.IntVar(&cfg.AdvisorNudge, "advisor-nudge", 0, "iteration to start reminding an unconsulted executor to call advisor (0 = off; needs --advisor-model)")
 
-	fl.Int64Var(&cfg.MaxTokens, "max-tokens", 0, "per-turn token budget, 0 = unlimited")
+	fl.Int64Var(&cfg.MaxTurnTokens, "max-turn-tokens", 0, "per-turn token budget (input+output cumulative), 0 = unlimited")
 	fl.IntVar(&cfg.MaxIterations, "max-iterations", 0, "per-turn iteration budget, 0 = unlimited")
 	fl.DurationVar(&cfg.MaxWallClock, "max-wall-clock", 0, "per-turn wall-clock budget, 0 = unlimited")
 
@@ -168,8 +172,7 @@ func newRootCmd() *cobra.Command {
 
 	fl.StringArrayVar(&cfg.MCPServers, "mcp-server", nil, `mount an MCP server, repeatable: "name=command arg1 arg2"`)
 	fl.StringVar(&cfg.ConversationID, "conversation-id", "", "resume a prior conversation's memory")
-	fl.StringVar(&cfg.BaseURL, "base-url", "", "LLM endpoint base URL, overrides tenzing.yaml base_url and provider defaults")
-	fl.StringVar(&cfg.APIKey, "api-key", "", `LLM API key, overrides provider env vars (shell-expand to inject: --api-key "$OPENROUTER_API_KEY")`)
+	fl.StringArrayVar(&cfg.Providers, "provider", nil, `declare or override a provider as JSON, repeatable: '{"name":"ollama-cloud","type":"ollama","url":"https://ollama.com/","api_key":"$OLLAMA_API_KEY"}'; merged over tenzing.yaml by name`)
 
 	fl.IntVar(&cfg.Port, "port", 8080, "serve-mode listen port (env SERVER_PORT)")
 	fl.StringVar(&cfg.NexusConfig, "nexus-config", "nexus.yaml", "nexus channel config path (env NEXUS_CONFIG)")

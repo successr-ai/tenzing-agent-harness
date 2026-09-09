@@ -89,18 +89,19 @@ func failingOpts() []harness.HarnessOption {
 	}
 }
 
-func printCfg() *cliConfig {
+func printCfg(t *testing.T) *cliConfig {
+	t.Helper()
 	return &cliConfig{
 		Prompt:       "hello",
 		OutputFormat: "text",
-		Model:        modelKey(defaultModel.Provider, defaultModel.Name),
+		Model:        seedRegistry(t),
 	}
 }
 
 func TestRunPrintText(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // memory files land under a temp config dir
 	var out bytes.Buffer
-	if err := runPrint(context.Background(), printCfg(), &out, io.Discard, stubOpts()...); err != nil {
+	if err := runPrint(context.Background(), printCfg(t), &out, io.Discard, stubOpts()...); err != nil {
 		t.Fatalf("runPrint: %v", err)
 	}
 	if got := out.String(); got != "stub answer\n" {
@@ -110,7 +111,7 @@ func TestRunPrintText(t *testing.T) {
 
 func TestRunPrintJSON(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := printCfg()
+	cfg := printCfg(t)
 	cfg.OutputFormat = "json"
 	var out bytes.Buffer
 	if err := runPrint(context.Background(), cfg, &out, io.Discard, stubOpts()...); err != nil {
@@ -147,7 +148,7 @@ func TestRunPrintJSON(t *testing.T) {
 func TestRunPrintTurnFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var out bytes.Buffer
-	err := runPrint(context.Background(), printCfg(), &out, io.Discard, failingOpts()...)
+	err := runPrint(context.Background(), printCfg(t), &out, io.Discard, failingOpts()...)
 	if err == nil {
 		t.Fatal("runPrint: want error, got nil")
 	}
@@ -165,7 +166,7 @@ func TestRunPrintTurnFailure(t *testing.T) {
 // error message, even though the turn failed.
 func TestRunPrintJSONTurnFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := printCfg()
+	cfg := printCfg(t)
 	cfg.OutputFormat = "json"
 	var out bytes.Buffer
 	err := runPrint(context.Background(), cfg, &out, io.Discard, failingOpts()...)
@@ -225,7 +226,7 @@ func TestJSONLWriterSerializesConcurrently(t *testing.T) {
 // success.
 func TestRunPrintDeniedToolSummary(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := printCfg()
+	cfg := printCfg(t)
 	cfg.OutputFormat = "json"
 	opts := []harness.HarnessOption{
 		harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return &stubMutatingAgent{}, nil }),
@@ -314,22 +315,22 @@ func TestEventQueueCloseWakesBlockedPop(t *testing.T) {
 	}
 }
 
-// TestPrintLogDir proves print-mode logs land in the user cache dir (created
-// on demand), not the cwd.
-func TestPrintLogDir(t *testing.T) {
+// TestLogDir proves logs land in <UserConfigDir>/tenzing/log (created on
+// demand), not the cwd.
+func TestLogDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", home+"/cache") // linux; darwin ignores it
+	t.Setenv("XDG_CONFIG_HOME", home+"/config") // linux; darwin ignores it
 
-	dir := printLogDir()
-	if filepath.Base(dir) != "tenzing" {
-		t.Errorf("printLogDir() = %q, want a .../tenzing dir", dir)
+	dir := logDir()
+	if filepath.Base(dir) != "log" || filepath.Base(filepath.Dir(dir)) != "tenzing" {
+		t.Errorf("logDir() = %q, want a .../tenzing/log dir", dir)
 	}
 	if !strings.HasPrefix(dir, home) {
-		t.Errorf("printLogDir() = %q, want under test home %q", dir, home)
+		t.Errorf("logDir() = %q, want under test home %q", dir, home)
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		t.Errorf("printLogDir() did not create %q: %v", dir, err)
+		t.Errorf("logDir() did not create %q: %v", dir, err)
 	}
 }
 

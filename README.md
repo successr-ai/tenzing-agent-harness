@@ -22,7 +22,7 @@ Protocol clients (`pkg/providers/protocols/`), each `NewClient(model, opts...) (
 
 - `anthropic` — native Anthropic SDK
 - `ollama` — native Ollama `/api/*` endpoints (local or Ollama Cloud)
-- `openai_compat` — any OpenAI-compatible API: OpenAI, Cerebras, Lightning, OpenRouter, ... (point it with `WithBaseURL`)
+- `openai_compat` — any OpenAI-compatible API: OpenAI, OpenRouter, Groq, a local vLLM, ... (point it with `WithBaseURL`)
 
 Models are values implementing `common.Model`, not strings. `pkg/models` ships a catalog of standard definitions for convenience (`models.Anthropic_ClaudeSonnet4_6`, `models.OpenRouter_KimiK3`, ...), but any `common.Model` implementation — including an inline `common.ModelDefinition` — works the same. API keys and base URLs are yours to supply via client options; the library reads no env vars.
 
@@ -106,7 +106,7 @@ The same pattern serves the other roles: `WithSubagentLLM` and `WithBlackboardLL
 - **Permissions & read-only mode** — code-executing/file-writing tools require approval by default (`ApprovalRequestedEvent`, `POST /approve`, 120s timeout); `--read-only` / `WithReadOnly()` instead denies every tool not marked read-only with no prompts ever — reads, `advisor`, and `spawn_agent` (children equally gated) still run; `--no-permissions` / `WithPermissionsDisabled()` disables gating entirely
 - **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
 - **Session persistence** — conversations recorded as JSONL per working directory; resume with `--resume <id>` or `-c` (latest), manage over HTTP (`GET/DELETE/PATCH /sessions`, `GET /messages`)
-- **Unified config file** — `tenzing.yaml` holds every durable setting (models incl. the custom-model registry, advisor, subagent, budgets, permissions, MCP servers, serve settings); `--config` / `TENZING_CONFIG` pick the file (default `./tenzing.yaml`, then `~/.config/tenzing/tenzing.yaml`), precedence CLI flag > env var > file > default; model flags alternatively take an inline JSON definition (see Quick Start)
+- **Unified config file** — `tenzing.yaml` holds every durable setting (models incl. the custom-model registry, advisor, subagent, budgets, permissions, MCP servers, serve settings); `--config` / `TENZING_CONFIG` pick the file (default `./tenzing.yaml`, then `<user config dir>/tenzing/tenzing.yaml`), precedence CLI flag > env var > file > default; model flags alternatively take an inline JSON definition (see Quick Start)
 - **Project config & trust** — `./SYSTEM.md` replaces / `./APPEND_SYSTEM.md` appends to the system prompt, `./.tenzing/prompts` adds slash-command templates; project-local files load only for trusted directories (`--trust`, `POST /trust`, or `TENZING_PROJECT_TRUST=trust`), global `<UserConfigDir>/tenzing/` equivalents always load
 - **Cost tracking** — token usage (incl. prompt-cache tokens) and USD cost per model, priced from `tenzing.yaml` model costs; `GET /stats` + a `cost` SSE event
 - **Vision** — image input on vision-capable models: `@path.png` args in `-p` prompts, `images[]` on `POST /query`, paste/drag-drop in the chat UI
@@ -135,19 +135,22 @@ task ask -- "summarize README.md"
 # JSONL event stream
 go run ./cmd/app -p "..." --output-format json
 
-# Pick a model / set budgets
-go run ./cmd/app -p "..." --model anthropic/claude-sonnet-4-6 --max-tokens 50000
+# Pick a model (by the name a models: entry declares) / set budgets
+go run ./cmd/app -p "..." --model main-model --max-turn-tokens 50000
 go run ./cmd/app --list-models
+
+# Declare or repoint a provider from the command line, repeatable; merged
+# over tenzing.yaml's providers: by name ("$VAR" expands in your shell).
+# type is optional and defaults to openai_compat
+go run ./cmd/app -p "..." \
+  --provider '{"name":"groq","url":"https://api.groq.com/openai/v1","api_key":"'"$GROQ_API_KEY"'"}'
 
 # Inline model definition: every model flag (--model, --subagent-model,
 # --blackboard-model, --advisor-model) also accepts stringified JSON with the
-# model entry fields; omitted context_window/max_tokens default to 128k/32k
+# model entry fields, naming a provider declared in the config or by
+# --provider; omitted context_window/max_response_tokens default to 128k/32k
 go run ./cmd/app -p "..." \
-  --model '{"provider":"openrouter","name":"deepseek/deepseek-v4-flash-0731","context_window":1048576}'
-
-# Point at a custom endpoint with an explicit key (beats env vars and
-# tenzing.yaml base_url; "$VAR" injects the key via shell expansion)
-go run ./cmd/app -p "..." --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
+  --model '{"provider":"ollama-cloud","model_name":"glm-5.3-flash","context_window":1048576}'
 
 # Load everything from a config file (default ./tenzing.yaml, see below)
 go run ./cmd/app -p "..." --config my-setup.yaml
@@ -169,22 +172,24 @@ go run ./cmd/app --read-only                      # deny mutating tools, no appr
 go run ./cmd/app -p "describe @screenshot.png"
 ```
 
-The CLI resolves provider API keys from the conventional env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional). `--api-key` overrides the env var and `--base-url` overrides tenzing.yaml `base_url` and the provider default endpoints (e.g. `--base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"`). Optional env: `TENZING_CONFIG` (tenzing.yaml path, default `./tenzing.yaml` then `~/.config/tenzing/tenzing.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
+Endpoints and API keys come from the config file's `providers:` section — the CLI reads no provider env vars of its own. Keep the secret in the environment and reference it: `api_key: "$OPENROUTER_API_KEY"` expands at load time. **`tenzing.yaml` is required**: providers and models are declared, never compiled in, so a first run without one fails with a pointer to `tenzing init`. Optional env: `TENZING_CONFIG` (tenzing.yaml path, default `./tenzing.yaml` then `<user config dir>/tenzing/tenzing.yaml`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
 
 ## Config file (`tenzing.yaml`)
 
-One YAML file for every durable setting. Located via `--config <path>` > `TENZING_CONFIG` > `./tenzing.yaml` > `$XDG_CONFIG_HOME/tenzing/tenzing.yaml` (default `~/.config/tenzing/tenzing.yaml`, for settings shared across projects). A missing file at either probed path is fine, a missing explicitly-named file is an error.
+One YAML file for every durable setting. `tenzing init` writes a starter `tenzing.yaml`, `settings.json` and `SYSTEM_PROMPT.md` into that per-user directory (embedded in the binary, so there is no install step); existing files are never overwritten, so re-running only fills in gaps.
 
-Path-valued keys (`system_file`, `nexus_config`, `mcp_servers[].command`) resolve **relative to the config file's own directory**, not the cwd — so a global `~/.config/tenzing/tenzing.yaml` can say `system_file: SYSTEM.md` and pick up `~/.config/tenzing/SYSTEM.md` from any working directory. Absolute paths are used as-is, and a bare `mcp_servers[].command` with no path separator (e.g. `npx`) stays a PATH lookup. The equivalent CLI flags (`--system`, `--nexus-config`) stay cwd-relative, like any other shell argument. Per setting, precedence is **CLI flag > env var > tenzing.yaml > default**. Unknown keys are a startup error, so typos fail loudly. All keys optional:
+Located via `--config <path>` > `TENZING_CONFIG` > `./tenzing.yaml` > `<user config dir>/tenzing/tenzing.yaml` (for settings shared across projects). The user config dir is Go's `os.UserConfigDir()`: `~/Library/Application Support/` on macOS, `$XDG_CONFIG_HOME/` (default `~/.config/`) elsewhere — the same `tenzing/` directory that holds `settings.json`, `trust.json`, `AGENTS.md` and `sessions/`. A missing file is an error either way: an explicitly-named path reports the path, a missing file at both probed paths points at `tenzing init`.
+
+Path-valued keys (`system_file`, `nexus_config`, `mcp_servers[].command`) resolve **relative to the config file's own directory**, not the cwd — so a global `<user config dir>/tenzing/tenzing.yaml` can say `system_file: SYSTEM.md` and pick up `SYSTEM.md` from beside it, from any working directory. Absolute paths are used as-is, and a bare `mcp_servers[].command` with no path separator (e.g. `npx`) stays a PATH lookup. The equivalent CLI flags (`--system`, `--nexus-config`) stay cwd-relative, like any other shell argument. Per setting, precedence is **CLI flag > env var > tenzing.yaml > default**. Unknown keys are a startup error, so typos fail loudly. `model`, `providers` and `models` are required; everything else is optional:
 
 ```yaml
-model: openrouter/some-model          # main model; ref or inline {provider,name,...}
+model: main-model                      # required; names a models: entry below
 subagent_model: ""
 blackboard_model: ""
 advisor_model: ""                     # setting it enables the advisor + write-gate
 advisor_nudge: 0
 
-max_tokens: 0                          # per-turn budgets; 0 = unlimited
+max_turn_tokens: 0                     # per-turn budget (input+output); 0 = unlimited
 max_iterations: 0
 max_wall_clock: "0s"                   # Go duration string
 
@@ -198,8 +203,6 @@ no_session: false
 no_context_files: false
 
 system_file: ""                        # file replacing the system prompt (--system); relative to this file
-base_url: ""                           # LLM endpoint override
-api_key: ""                            # $VAR / ${VAR} expand from the environment (api_key: "$OLLAMA_API_KEY")
 
 port: 8080                             # serve mode
 nexus_config: nexus.yaml
@@ -216,31 +219,40 @@ mcp_servers:                           # mounted alongside any --mcp-server flag
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
-models:                                # custom model registry (replaces models.yaml)
-  default: ""                          # fallback default; the top-level model: wins
-  entries:
-    - provider: openrouter             # anthropic|cerebras|lightning|ollama|openai|openrouter
-      name: some-model
-      context_window: 128000           # optional, default 128k
-      max_tokens: 32768                # optional, default 32k
-      base_url: ""                     # optional, applies to the whole provider
-      vision: false
-      reasoning_effort: ""             # optional; provider reasoning tier, e.g. low|medium|high (+ max on Ollama)
-      cost: {input: 1.0, output: 3.0}  # USD/MTok; cache_read/cache_write default 0.1x/1.25x input
+providers:                             # required: the backends models are served from
+  - name: ollama-cloud                 # unique label, referenced by models[].provider
+    type: ollama                       # anthropic|ollama|openai_compat; omit for openai_compat
+    url: https://ollama.com/           # required for openai_compat, optional for the other two
+    api_key: "$OLLAMA_API_KEY"         # optional; empty = no auth. $VAR / ${VAR} expand from the environment
+  - name: openrouter                   # no type: most hosted APIs speak the OpenAI protocol
+    url: https://openrouter.ai/api/v1
+    api_key: "$OPENROUTER_API_KEY"
+    extra:                             # openai_compat only; injected into every request body
+      provider.sort: throughput
+
+models:                                # required: the models that can be selected
+  - name: main-model                   # unique local alias — what model: and --model refer to
+    provider: ollama-cloud             # must name an entry in providers:
+    model_name: glm-5.3-flash          # the id sent to the provider on the wire
+    context_window: 128000             # optional, default 128k
+    max_response_tokens: 32768         # optional, default 32k; caps one response
+    vision: false
+    reasoning_effort: ""               # optional; provider reasoning tier, e.g. low|medium|high (+ max on Ollama)
+    cost: {input: 1.0, output: 3.0}    # USD/MTok; cache_read/cache_write default 0.1x/1.25x input
 ```
 
 ### All options
 
-Every key, with its CLI/env equivalent (which override the file). Durations are Go duration strings (`"90s"`, `"5m"`). Model refs are `provider/name` or an inline JSON definition with the entry fields below. `$VAR` and `${VAR}` anywhere in the file are expanded from the environment before parsing; a reference to an unset variable is left as written.
+Every key, with its CLI/env equivalent (which override the file). Durations are Go duration strings (`"90s"`, `"5m"`). A **model ref** is the `name` of a `models:` entry, or an inline JSON definition with the model fields below naming a declared provider. `$VAR` and `${VAR}` anywhere in the file are expanded from the environment before parsing; a reference to an unset variable is left as written.
 
 | Key | Type | Default | Overridden by | Description |
 |---|---|---|---|---|
-| `model` | model ref | `ollama/glm-5.2:cloud` | `--model`, `TENZING_MODEL` | Main model. Wins over `models.default`. |
+| `model` | model ref | **required** | `--model` | Main model, and the fallback for `subagent_model`/`blackboard_model`. No model at all is a startup error. |
 | `subagent_model` | model ref | main model | `--subagent-model` | Model for `spawn_agent` subagents. |
 | `blackboard_model` | model ref | main model | `--blackboard-model` | Model for blackboard `llm_query`/`llm_batch`. |
 | `advisor_model` | model ref | unset | `--advisor-model` | Setting it enables the `advisor` tool and its write-gate (first state-changing tool call per turn requires a prior consult). |
 | `advisor_nudge` | int | `0` (off) | `--advisor-nudge` | Iteration from which an unconsulted executor gets a reminder; requires `advisor_model`. |
-| `max_tokens` | int | `0` (unlimited) | `--max-tokens` | Per-turn token budget (input+output cumulative). |
+| `max_turn_tokens` | int | `0` (unlimited) | `--max-turn-tokens` | Per-turn token budget, input+output cumulative. Distinct from a model's `max_response_tokens`, which caps a single response. |
 | `max_iterations` | int | `0` (unlimited) | `--max-iterations` | Per-turn iteration budget. |
 | `max_wall_clock` | duration | `"0s"` (unlimited) | `--max-wall-clock` | Per-turn wall-clock budget. |
 | `subagent_depth` | int | `1` | `--subagent-depth` | Subagent nesting depth; `0` disables `spawn_agent`. |
@@ -252,14 +264,13 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `no_session` | bool | `false` | `--no-session` | Disable session persistence. |
 | `no_context_files` | bool | `false` | `--no-context-files` | Skip AGENTS.md context-file loading. |
 | `system_file` | path | unset | `--system` | File whose contents replace the system prompt. Relative paths resolve against the config file's directory. |
-| `base_url` | URL | provider default | `--base-url` | LLM endpoint base URL; beats per-provider `models.entries[].base_url`. |
-| `api_key` | string | provider env var | `--api-key` | LLM API key. Prefer the provider env vars, or reference one: `api_key: "$OLLAMA_API_KEY"`. |
 | `port` | int | `8080` | `--port`, `SERVER_PORT` | Serve-mode listen port. |
 | `nexus_config` | path | `nexus.yaml` | `--nexus-config`, `NEXUS_CONFIG` | Nexus channel config path. |
-| `debug` | bool | `false` | `--debug`, `LOG_DEBUG` | Trace-level logging to a fresh log file. |
+| `debug` | bool | `false` | `--debug`, `LOG_DEBUG` | Trace-level logging to a fresh log file in `<UserConfigDir>/tenzing/log/`. |
 | `permissions` | section | unset | — | Per-tool overrides of the default permission policy; see below. |
 | `mcp_servers` | list | `[]` | — (additive with `--mcp-server`) | MCP servers to mount; file entries and flag entries both apply. |
-| `models` | section | empty | — | Custom model registry; see below. |
+| `providers` | list | **required** | `--provider` (merged by name) | Backends models are served from; see below. |
+| `models` | list | **required** | — | Model definitions; see below. |
 
 `permissions` keys. The default policy asks for `bash`, `Write`, `Edit`, `repl`, `spawn_agent` and every `mcp:`-origin tool, and allows everything else. Each list here is merged into that default, and a tool named in one list is removed from the other two — so `allow: [Read, Write, Edit]` stops those prompts while `bash` and MCP tools keep asking. Names match case-insensitively. Precedence at call time is Deny > Ask > Allow > `ask_origins`.
 
@@ -278,29 +289,30 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `command` | string | yes | Executable to launch. |
 | `args` | string list | no | Arguments for the command. |
 
-`models` section:
+`providers[]` fields. A provider is one backend: a wire protocol plus the endpoint and key to reach it. `name` is a free label, so declaring the same `type` twice lets one config reach a local box and a hosted endpoint. `--provider '{...}'` is the same object as JSON, repeatable, and replaces a file entry of the same name outright (it does not patch it, so restate every field you need).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default` | model ref | unset | Default model when neither `--model`, `TENZING_MODEL`, nor top-level `model:` picks one. |
-| `entries` | list | `[]` | Custom model definitions, layered over the compiled-in set (same `provider/name` overrides the builtin). |
+| `name` | string | required | Unique label, referenced by `models[].provider`. Also how the backend identifies itself in logs and errors. |
+| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, or `openai_compat`. Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
+| `url` | URL | required for `openai_compat` | Endpoint. Required for `openai_compat`, which has nothing to default to. Optional for `anthropic` (defaults to `https://api.anthropic.com`) and `ollama` (defaults to **`https://ollama.com/`, the cloud endpoint** — set it explicitly to `http://localhost:11434` for a local daemon). |
+| `api_key` | string | unset | Omitted or empty means no auth (a local Ollama). Reference the environment rather than writing the secret: `api_key: "$OLLAMA_API_KEY"`. |
+| `extra` | map | unset | Fields injected into every request body, by dotted path (`provider.sort: throughput`). `openai_compat` only — silently ignored on the other types. Values are unvalidated: a bad key fails at the provider on the first request, not at startup. One key is reserved: `max_completion_tokens: true` renames the token-limit parameter instead of adding a field, which is what current OpenAI models require. |
 
-`models.entries[]` fields (also the schema for inline JSON model refs):
+`models[]` fields (also the schema for inline JSON model refs). Note `name` and `model_name` are different things: `name` is the alias you refer to the model by, `model_name` is the id the provider knows it as.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `provider` | string | required | One of `anthropic`, `cerebras`, `lightning`, `ollama`, `openai`, `openrouter`. |
-| `name` | string | required | Model name as the provider expects it. |
+| `name` | string | required | Unique local alias; what `model:`, `--model` and the other model keys refer to. |
+| `provider` | string | required | Must name an entry in `providers:`. |
+| `model_name` | string | required | The id sent to the provider on the wire (e.g. `glm-5.3-flash`). |
 | `context_window` | int | `131072` | Context window size in tokens. |
-| `max_tokens` | int | `32768` | Max output tokens per response. |
-| `base_url` | URL | provider default | Endpoint override; applies to the whole provider. Ignored in inline refs. |
+| `max_response_tokens` | int | `32768` | Max output tokens in a single response. Distinct from the top-level `max_turn_tokens`, which bounds a whole turn. |
 | `vision` | bool | `false` | Marks the model as accepting image input; image-bearing queries are rejected without it. |
-| `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: ollama/glm-5.3`). |
-| `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1× input), `cache_write` (default 1.25× input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |
+| `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: careful-model`). |
+| `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1x input), `cache_write` (default 1.25x input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |
 
 Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`.
-
-**Migrating from models.yaml** (no longer read): move its content under the `models:` key, renaming the `models:` list to `entries:`, and delete the `TENZING_MODELS_CONFIG` env var — e.g. `default: x` + `models: [...]` becomes `models: {default: x, entries: [...]}` in `tenzing.yaml`.
 
 ## HTTP API (serve mode)
 

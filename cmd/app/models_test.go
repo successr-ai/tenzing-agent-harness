@@ -6,104 +6,142 @@ import (
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/config"
-	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
-
-	pkgmodels "github.com/successr-ai/tenzing-agent-harness/pkg/models"
 )
+
+// testProviders is the provider set the registry tests build against: two
+// instances of one type, so the tests can prove a model binds to the
+// instance it names rather than to the type.
+var testProviders = []config.Provider{
+	{Name: "local", Type: "ollama", URL: "http://localhost:11434"},
+	{Name: "cloud", Type: "ollama", URL: "https://ollama.com/", APIKey: "sk-cloud"},
+	{Name: "claude", Type: "anthropic", URL: "https://api.anthropic.com"},
+}
+
+// testRegistry builds a registry over testProviders plus the given entries,
+// failing the test on error.
+func testRegistry(t *testing.T, entries ...config.ModelEntry) *modelRegistry {
+	t.Helper()
+	reg, err := buildRegistry(testProviders, entries)
+	if err != nil {
+		t.Fatalf("buildRegistry: %v", err)
+	}
+	return reg
+}
+
+// seedRegistry points the process-wide registry at one declared model for
+// the duration of the test and returns its alias. Tests that go through
+// resolveModel (print mode, the root command) need a registry: nothing is
+// compiled in any more.
+func seedRegistry(t *testing.T) string {
+	t.Helper()
+	orig := models
+	t.Cleanup(func() { models = orig })
+	models = testRegistry(t, config.ModelEntry{Name: "test-model", Provider: "local", ModelName: "glm-5.3"})
+	return "test-model"
+}
 
 func TestBuildRegistry(t *testing.T) {
 	tests := []struct {
 		name    string
-		section config.ModelsSection
+		entries []config.ModelEntry
 		wantErr string
 		check   func(t *testing.T, reg *modelRegistry)
 	}{
 		{
-			name: "zero section is empty registry",
+			name: "no entries is an empty registry",
 			check: func(t *testing.T, reg *modelRegistry) {
-				if reg.defaultModel.Name != "" || len(reg.custom) != 0 || len(reg.baseURLs) != 0 {
-					t.Errorf("registry not empty: %+v", reg)
+				if len(reg.byName) != 0 {
+					t.Errorf("registry not empty: %+v", reg.byName)
+				}
+				if len(reg.providers) != len(testProviders) {
+					t.Errorf("providers not indexed: %+v", reg.providers)
 				}
 			},
 		},
 		{
-			name: "custom model with defaults applied",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "ollama", Name: "my-custom"},
-			}},
+			name:    "size defaults applied",
+			entries: []config.ModelEntry{{Name: "small", Provider: "local", ModelName: "qwen3"}},
 			check: func(t *testing.T, reg *modelRegistry) {
-				def, err := reg.resolve("ollama/my-custom")
+				rm, err := reg.resolve("small")
 				if err != nil {
 					t.Fatalf("resolve: %v", err)
 				}
-				if def.ContextWindowSize != defaultCustomContextWindow || def.MaxTokens != defaultCustomMaxTokens {
-					t.Errorf("defaults not applied: %+v", def)
-				}
-				if def.Provider != "ollama" {
-					t.Errorf("provider = %q", def.Provider)
+				if rm.def.ContextWindowSize != defaultContextWindow || rm.def.MaxTokens != defaultMaxResponseTokens {
+					t.Errorf("defaults not applied: %+v", rm.def)
 				}
 			},
 		},
 		{
-			name: "explicit sizes and base url",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "ollama", Name: "big", ContextWindow: 200000, MaxTokens: 4096, BaseURL: "http://box:11434"},
+			name:    "alias and wire name are kept apart",
+			entries: []config.ModelEntry{{Name: "main-model", Provider: "cloud", ModelName: "glm-5.3-flash"}},
+			check: func(t *testing.T, reg *modelRegistry) {
+				rm, err := reg.resolve("main-model")
+				if err != nil {
+					t.Fatalf("resolve: %v", err)
+				}
+				// The definition carries the wire id: that is what the
+				// protocol clients send and what comes back on the event.
+				if rm.def.Name != "glm-5.3-flash" {
+					t.Errorf("def.Name = %q, want the wire model_name", rm.def.Name)
+				}
+				if _, err := reg.resolve("glm-5.3-flash"); err == nil {
+					t.Error("wire name should not resolve; only the alias does")
+				}
+			},
+		},
+		{
+			name: "model binds to the provider instance it names",
+			entries: []config.ModelEntry{
+				{Name: "here", Provider: "local", ModelName: "glm-5.3"},
+				{Name: "there", Provider: "cloud", ModelName: "glm-5.3"},
+			},
+			check: func(t *testing.T, reg *modelRegistry) {
+				here, _ := reg.resolve("here")
+				there, _ := reg.resolve("there")
+				if here.provider.URL != "http://localhost:11434" || there.provider.URL != "https://ollama.com/" {
+					t.Errorf("providers crossed: here=%q there=%q", here.provider.URL, there.provider.URL)
+				}
+				if there.provider.APIKey != "sk-cloud" {
+					t.Errorf("api key not carried: %q", there.provider.APIKey)
+				}
+				// Both definitions get the provider's type, not its name.
+				if here.def.Provider != "ollama" || there.def.Provider != "ollama" {
+					t.Errorf("def.Provider should be the type: %q / %q", here.def.Provider, there.def.Provider)
+				}
+			},
+		},
+		{
+			name: "explicit sizes, vision and reasoning effort honored",
+			entries: []config.ModelEntry{{
+				Name: "big", Provider: "local", ModelName: "glm-5.3",
+				ContextWindow: 200000, MaxResponseTokens: 4096, Vision: true, ReasoningEffort: "max",
 			}},
 			check: func(t *testing.T, reg *modelRegistry) {
-				def, _ := reg.resolve("ollama/big")
-				if def.ContextWindowSize != 200000 || def.MaxTokens != 4096 {
-					t.Errorf("sizes not honored: %+v", def)
+				rm, _ := reg.resolve("big")
+				if rm.def.ContextWindowSize != 200000 || rm.def.MaxTokens != 4096 {
+					t.Errorf("sizes not honored: %+v", rm.def)
 				}
-				if reg.baseURLs["ollama"] != "http://box:11434" {
-					t.Errorf("base url = %q", reg.baseURLs["ollama"])
+				if !rm.def.SupportsVision || rm.def.ReasoningEffort != "max" {
+					t.Errorf("flags not carried: %+v", rm.def)
 				}
 			},
 		},
 		{
-			name: "vision flag honored",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "ollama", Name: "seeing", Vision: true},
+			// Pricing is matched against LLMResponseEvent.Model, which the
+			// provider fills in from the response — the wire name, never
+			// the local alias.
+			name: "pricing is keyed by the wire model name",
+			entries: []config.ModelEntry{{
+				Name: "priced", Provider: "claude", ModelName: "Claude-Opus-4-6",
+				Cost: &config.CostEntry{Input: 3.0, Output: 15.0},
 			}},
 			check: func(t *testing.T, reg *modelRegistry) {
-				def, _ := reg.resolve("ollama/seeing")
-				if !def.SupportsVision {
-					t.Errorf("vision flag not applied: %+v", def)
-				}
-			},
-		},
-		{
-			name: "reasoning effort carried onto the definition",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "ollama", Name: "thinker", ReasoningEffort: "max"},
-			}},
-			check: func(t *testing.T, reg *modelRegistry) {
-				def, _ := reg.resolve("ollama/thinker")
-				if def.ReasoningEffort != "max" {
-					t.Errorf("reasoning effort = %q, want max", def.ReasoningEffort)
-				}
-			},
-		},
-		{
-			name: "default referencing custom entry",
-			section: config.ModelsSection{
-				Default: "ollama/my-custom",
-				Entries: []config.ModelEntry{{Provider: "ollama", Name: "my-custom"}},
-			},
-			check: func(t *testing.T, reg *modelRegistry) {
-				if reg.defaultModel.Name != "my-custom" {
-					t.Errorf("default = %+v", reg.defaultModel)
-				}
-			},
-		},
-		{
-			name: "cost cache rates default to anthropic convention",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "anthropic", Name: "priced", Cost: &config.CostEntry{Input: 3.0, Output: 15.0}},
-			}},
-			check: func(t *testing.T, reg *modelRegistry) {
-				p, ok := reg.pricing["priced"]
+				p, ok := reg.pricing["claude-opus-4-6"]
 				if !ok {
-					t.Fatal("pricing entry missing")
+					t.Fatalf("pricing not keyed by wire name: %+v", reg.pricing)
+				}
+				if _, ok := reg.pricing["priced"]; ok {
+					t.Error("pricing should not be keyed by the alias")
 				}
 				if math.Abs(p.CacheRead-0.3) > 1e-9 || math.Abs(p.CacheWrite-3.75) > 1e-9 {
 					t.Errorf("cache rate defaults = %+v, want read 0.3 write 3.75", p)
@@ -112,36 +150,32 @@ func TestBuildRegistry(t *testing.T) {
 		},
 		{
 			name: "explicit cost cache rates honored",
-			section: config.ModelsSection{Entries: []config.ModelEntry{
-				{Provider: "anthropic", Name: "priced", Cost: &config.CostEntry{Input: 3.0, Output: 15.0, CacheRead: 0.5, CacheWrite: 4.0}},
+			entries: []config.ModelEntry{{
+				Name: "priced", Provider: "claude", ModelName: "opus",
+				Cost: &config.CostEntry{Input: 3.0, Output: 15.0, CacheRead: 0.5, CacheWrite: 4.0},
 			}},
 			check: func(t *testing.T, reg *modelRegistry) {
-				p := reg.pricing["priced"]
+				p := reg.pricing["opus"]
 				if p.CacheRead != 0.5 || p.CacheWrite != 4.0 {
 					t.Errorf("explicit cache rates = %+v", p)
 				}
 			},
 		},
 		{
-			name:    "default referencing unknown model fails",
-			section: config.ModelsSection{Default: "ollama/does-not-exist"},
-			wantErr: "not found",
+			name:    "undeclared provider fails with the declared list",
+			entries: []config.ModelEntry{{Name: "x", Provider: "nonsense", ModelName: "m"}},
+			wantErr: "not declared in providers",
 		},
 		{
-			name:    "unknown provider fails with provider list",
-			section: config.ModelsSection{Entries: []config.ModelEntry{{Provider: "nonsense", Name: "x"}}},
-			wantErr: "unknown provider",
-		},
-		{
-			name:    "missing name fails",
-			section: config.ModelsSection{Entries: []config.ModelEntry{{Provider: "ollama"}}},
-			wantErr: "name is required",
+			name:    "missing model_name fails",
+			entries: []config.ModelEntry{{Name: "x", Provider: "local"}},
+			wantErr: "model_name is required",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reg, err := buildRegistry(tt.section)
+			reg, err := buildRegistry(testProviders, tt.entries)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -157,19 +191,18 @@ func TestBuildRegistry(t *testing.T) {
 }
 
 func TestResolveRefs(t *testing.T) {
-	reg := emptyRegistry()
+	reg := testRegistry(t, config.ModelEntry{Name: "main", Provider: "cloud", ModelName: "glm-5.3"})
 
 	tests := []struct {
 		ref     string
 		wantErr string
 	}{
-		{ref: "anthropic/" + pkgmodels.Anthropic_ClaudeHaiku4_5.GetName()},
-		{ref: "no-slash", wantErr: "provider/model-name"},
-		{ref: "bogus/model", wantErr: "unknown provider"},
-		{ref: "ollama/never-heard-of-it", wantErr: "not found"},
-		{ref: `{"provider":"openrouter","name":"deepseek/deepseek-v4-flash-0731"}`},
-		{ref: `{"provider":"bogus","name":"x"}`, wantErr: "unknown provider"},
-		{ref: `{"provider":"openrouter"}`, wantErr: "name is required"},
+		{ref: "main"},
+		{ref: "not-declared", wantErr: "not declared in models"},
+		{ref: "", wantErr: "not declared in models"},
+		{ref: `{"provider":"local","model_name":"qwen3"}`},
+		{ref: `{"provider":"bogus","model_name":"x"}`, wantErr: "not declared in providers"},
+		{ref: `{"provider":"local"}`, wantErr: "model_name is required"},
 		{ref: `{not json`, wantErr: "inline model definition"},
 	}
 	for _, tt := range tests {
@@ -188,86 +221,158 @@ func TestResolveRefs(t *testing.T) {
 	}
 }
 
-// TestResolveInlineJSON checks explicit fields carry through and omitted
-// ones get the custom-model defaults, same as models.yaml entries.
+// TestResolveInlineJSON checks explicit fields carry through, omitted ones
+// get the defaults, and the named provider is attached — same as a models:
+// entry.
 func TestResolveInlineJSON(t *testing.T) {
-	reg := emptyRegistry()
+	reg := testRegistry(t)
 
-	full := `{"provider":"openrouter","name":"deepseek/deepseek-v4-flash-0731","context_window":1048576,"max_tokens":65536,"vision":true}`
-	def, err := reg.resolve(full)
+	full := `{"provider":"cloud","model_name":"glm-5.3","context_window":1048576,"max_response_tokens":65536,"vision":true}`
+	rm, err := reg.resolve(full)
 	if err != nil {
 		t.Fatalf("resolve full: %v", err)
 	}
-	if def.Provider != "openrouter" || def.Name != "deepseek/deepseek-v4-flash-0731" {
-		t.Errorf("got %s/%s", def.Provider, def.Name)
+	if rm.def.Name != "glm-5.3" || rm.provider.Name != "cloud" || rm.provider.APIKey != "sk-cloud" {
+		t.Errorf("provider not attached: def=%+v provider=%+v", rm.def, rm.provider)
 	}
-	if def.ContextWindowSize != 1048576 || def.MaxTokens != 65536 || !def.SupportsVision {
-		t.Errorf("fields not carried: ctx=%d max=%d vision=%v", def.ContextWindowSize, def.MaxTokens, def.SupportsVision)
+	if rm.def.ContextWindowSize != 1048576 || rm.def.MaxTokens != 65536 || !rm.def.SupportsVision {
+		t.Errorf("fields not carried: %+v", rm.def)
 	}
 
-	minimal := `{"provider":"ollama","name":"tiny"}`
-	def, err = reg.resolve(minimal)
+	rm, err = reg.resolve(`{"provider":"local","model_name":"tiny"}`)
 	if err != nil {
 		t.Fatalf("resolve minimal: %v", err)
 	}
-	if def.ContextWindowSize != defaultCustomContextWindow || def.MaxTokens != defaultCustomMaxTokens {
-		t.Errorf("defaults not applied: ctx=%d max=%d", def.ContextWindowSize, def.MaxTokens)
+	if rm.def.ContextWindowSize != defaultContextWindow || rm.def.MaxTokens != defaultMaxResponseTokens {
+		t.Errorf("defaults not applied: %+v", rm.def)
 	}
 }
 
-func TestResolveModel(t *testing.T) {
-	known := pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition)
-	knownKey := modelKey(known.Provider, known.Name)
-	tests := []struct {
-		name    string
-		in      string
-		wantErr bool
-	}{
-		{"known model by its own key", knownKey, false},
-		{"case-insensitive", strings.ToUpper(knownKey), false},
-		{"unknown model", "ollama/does-not-exist", true},
-		{"unknown provider", "nope/whatever", true},
-		{"malformed no slash", "justaname", true},
-		{"empty", "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveModel(tt.in)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("resolveModel(%q) = %+v, want error", tt.in, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolveModel(%q) error: %v", tt.in, err)
-			}
-			if got.Name != known.Name || got.Provider != known.Provider {
-				t.Errorf("resolveModel(%q) = %s/%s, want %s/%s", tt.in, got.Provider, got.Name, known.Provider, known.Name)
-			}
-		})
-	}
-}
+// TestResolveModelErrorListsDeclared proves a bad alias reports what is
+// declared, while a bad inline ref does not (the list wouldn't help).
+func TestResolveModelErrorListsDeclared(t *testing.T) {
+	orig := models
+	t.Cleanup(func() { models = orig })
+	models = testRegistry(t, config.ModelEntry{Name: "main-model", Provider: "cloud", ModelName: "glm-5.3"})
 
-func TestResolveModelErrorListsValidNames(t *testing.T) {
-	_, err := resolveModel("ollama/does-not-exist")
+	if _, err := resolveModel("main-model"); err != nil {
+		t.Fatalf("declared model should resolve: %v", err)
+	}
+
+	_, err := resolveModel("does-not-exist")
 	if err == nil {
 		t.Fatal("want error")
 	}
-	if !strings.Contains(err.Error(), modelKey(pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition).Provider, pkgmodels.Ollama_GLM5_2_Cloud.GetName())) {
-		t.Errorf("error should list valid models, got: %v", err)
+	if !strings.Contains(err.Error(), "main-model") {
+		t.Errorf("error should list declared models, got: %v", err)
+	}
+
+	_, err = resolveModel(`{"provider":"local"}`)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if strings.Contains(err.Error(), "main-model") {
+		t.Errorf("inline error should not list models, got: %v", err)
 	}
 }
 
 func TestModelList(t *testing.T) {
+	orig := models
+	t.Cleanup(func() { models = orig })
+	models = testRegistry(t,
+		config.ModelEntry{Name: "zeta", Provider: "local", ModelName: "z"},
+		config.ModelEntry{Name: "alpha", Provider: "cloud", ModelName: "a"},
+	)
+
 	out := modelList()
-	if !strings.Contains(out, modelKey(pkgmodels.Anthropic_ClaudeOpus4_6.(common.ModelDefinition).Provider, pkgmodels.Anthropic_ClaudeOpus4_6.GetName())) {
-		t.Errorf("modelList missing anthropic entry:\n%s", out)
+	for _, want := range []string{"alpha", "zeta", "cloud", "local"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("modelList missing %q:\n%s", want, out)
+		}
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if !sortedStrings(lines) {
-		t.Error("modelList not sorted")
+		t.Errorf("modelList not sorted:\n%s", out)
 	}
+}
+
+func TestMergeProviderFlags(t *testing.T) {
+	file := []config.Provider{
+		{Name: "local", Type: "ollama", URL: "http://localhost:11434"},
+		{Name: "claude", Type: "anthropic", URL: "https://api.anthropic.com"},
+	}
+
+	t.Run("no flags leaves the file list alone", func(t *testing.T) {
+		got, err := mergeProviderFlags(file, nil)
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("got %d providers, want 2", len(got))
+		}
+	})
+
+	t.Run("matching name replaces in place", func(t *testing.T) {
+		got, err := mergeProviderFlags(file,
+			[]string{`{"name":"local","type":"ollama","url":"http://box:11434","api_key":"sk-x"}`})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d providers, want 2 (replace, not append)", len(got))
+		}
+		if got[0].Name != "local" || got[0].URL != "http://box:11434" || got[0].APIKey != "sk-x" {
+			t.Errorf("not replaced in place: %+v", got[0])
+		}
+		// The file list is the caller's; merging must not scribble on it.
+		if file[0].URL != "http://localhost:11434" {
+			t.Errorf("file list mutated: %+v", file[0])
+		}
+	})
+
+	t.Run("omitted type defaults to openai_compat", func(t *testing.T) {
+		got, err := mergeProviderFlags(file,
+			[]string{`{"name":"groq","url":"https://api.groq.com/openai/v1"}`})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if got[2].Type != config.DefaultProviderType {
+			t.Errorf("flag provider type = %q, want the default", got[2].Type)
+		}
+	})
+
+	t.Run("new name is appended", func(t *testing.T) {
+		got, err := mergeProviderFlags(file,
+			[]string{`{"name":"cloud","type":"ollama","url":"https://ollama.com/"}`})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if len(got) != 3 || got[2].Name != "cloud" {
+			t.Errorf("not appended: %+v", got)
+		}
+	})
+
+	t.Run("invalid flags rejected", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			flag    string
+			wantErr string
+		}{
+			{"malformed", `{not json`, "--provider[0]"},
+			{"no name", `{"type":"ollama","url":"http://x"}`, "name is required"},
+			{"unknown type", `{"name":"n","type":"llamafile","url":"http://x"}`, "unknown type"},
+			{"no url on compat", `{"name":"n"}`, "url is required for openai_compat"},
+			{"vendor name is not a type", `{"name":"n","type":"openrouter","url":"http://x"}`, "unknown type"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := mergeProviderFlags(file, []string{tt.flag})
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+			})
+		}
+	})
 }
 
 func sortedStrings(s []string) bool {

@@ -85,7 +85,7 @@ type pendingApproval struct {
 // newAgentServer builds the server. pricing (model name → USD per MTok) may
 // be nil; it must be passed here rather than set later because the event
 // forwarding goroutine starts reading the cost tracker immediately.
-func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), pricing map[string]config.CostEntry, extraOpts ...harness.HarnessOption) (*agentServer, error) {
+func newAgentServer(model resolvedModel, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), pricing map[string]config.CostEntry, extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
 		bus:       bus,
 		nexus:     nx,
@@ -1081,11 +1081,11 @@ func (s *agentServer) handleModelSet(_ context.Context, _ router.MapAuthInfo, in
 	if s.models == nil {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no model registry configured")
 	}
-	def, err := s.models.resolve(strings.TrimSpace(in.Body.Model))
+	rm, err := s.models.resolve(strings.TrimSpace(in.Body.Model))
 	if err != nil {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
 	}
-	llm, err := llms.get(def)
+	llm, err := llms.get(rm)
 	if err != nil {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
 	}
@@ -1093,7 +1093,7 @@ func (s *agentServer) handleModelSet(_ context.Context, _ router.MapAuthInfo, in
 		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
 	}
 	out := &statusOutput{}
-	out.Body.Status = "model set to " + def.Name
+	out.Body.Status = "model set to " + rm.def.Name
 	return out, nil
 }
 
@@ -1101,7 +1101,7 @@ func (s *agentServer) handleModelsList(_ context.Context, _ router.MapAuthInfo, 
 	out := &modelsOutput{}
 	out.Body.Current = s.harness.GetCurrentModel()
 	if s.models != nil {
-		out.Body.Models = s.models.availableRefs()
+		out.Body.Models = s.models.names()
 	}
 	return out, nil
 }

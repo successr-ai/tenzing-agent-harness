@@ -111,7 +111,7 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 	}
 	query := strings.Join(promptArgs, " ")
 
-	logFile, err := setupLogging(printLogDir(), cfg.Debug, io.Discard)
+	logFile, err := setupLogging(cfg.Debug, io.Discard)
 	if err != nil {
 		return err
 	}
@@ -299,17 +299,16 @@ func (q *eventQueue) pop() (core.Event, bool) {
 	return ev, true
 }
 
-// printLogDir picks where print-mode log files go: the user cache dir
-// (created on demand) rather than the cwd, so headless runs from arbitrary
-// directories don't sprinkle log files wherever they run. Serve mode keeps
-// logging to the cwd. Falls back to the OS temp dir when the cache dir is
-// unavailable.
-func printLogDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
+// logDir picks where log files go: <UserConfigDir>/tenzing/log (created on
+// demand) rather than the cwd, so runs from arbitrary directories don't
+// sprinkle log files wherever they run. Falls back to the OS temp dir when
+// the config dir is unavailable.
+func logDir() string {
+	base := userConfigDir()
+	if base == "" {
 		return os.TempDir()
 	}
-	dir := filepath.Join(base, "tenzing")
+	dir := filepath.Join(base, "log")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return os.TempDir()
 	}

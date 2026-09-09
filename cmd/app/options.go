@@ -31,7 +31,7 @@ type cliConfig struct {
 	AdvisorNudge    int
 
 	// budgets
-	MaxTokens     int64
+	MaxTurnTokens int64
 	MaxIterations int
 	MaxWallClock  time.Duration
 
@@ -67,8 +67,9 @@ type cliConfig struct {
 	MCPServers       []string           // --mcp-server "name=cmd args" strings
 	MCPServerConfigs []mcp.ServerConfig // pre-parsed servers from tenzing.yaml
 	ConversationID   string
-	BaseURL          string // overrides tenzing.yaml base_url and provider default endpoints
-	APIKey           string // overrides the provider's conventional env var
+	// Providers are raw --provider JSON definitions, merged over
+	// tenzing.yaml's providers: list by name at startup.
+	Providers []string
 
 	// serve
 	Port        int
@@ -109,11 +110,11 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 		if ref == "" {
 			return nil
 		}
-		def, err := resolveModel(ref)
+		rm, err := resolveModel(ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", flag, err)
 		}
-		llm, err := llms.get(def)
+		llm, err := llms.get(rm)
 		if err != nil {
 			return fmt.Errorf("%s: %w", flag, err)
 		}
@@ -137,11 +138,11 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 		}
 	}
 
-	if cfg.MaxTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {
+	if cfg.MaxTurnTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {
 		opts = append(opts, harness.WithBudgets(budgets.Limits{
 			MaxIterations: cfg.MaxIterations,
 			MaxWallClock:  cfg.MaxWallClock,
-			MaxTokens:     cfg.MaxTokens,
+			MaxTokens:     cfg.MaxTurnTokens,
 		}))
 	}
 

@@ -1,0 +1,41 @@
+# Starter config. Every provider and model tenzing can use is declared here —
+# nothing is compiled into the binary, so this file is required.
+
+# The main agent's model, named by one of the models: entries below. It is
+# also the fallback for subagents and the blackboard REPL when those leave
+# their own model unset.
+model: main-model
+
+# Set permissions for the agent. The default is Read-only, which is safe for most users.
+permissions:
+  allow: [Read, Write, Edit, repl]
+
+# Global system prompt, resolved relative to THIS file (~/.config/tenzing/SYSTEM.md).
+# Uncomment once SYSTEM.md exists. Note: it REPLACES the built-in prompt entirely.
+system_file: SYSTEM_PROMPT.md
+
+# A provider is one backend: a wire protocol (type) plus the endpoint and
+# key to reach it. name is a free label — declare the same type twice to
+# reach a local box and a hosted endpoint from one config. api_key is
+# optional (a local Ollama needs none) and $VAR is expanded from the
+# environment, so the secret never lands on disk.
+# Types: anthropic, cerebras, lightning, ollama, openai, openrouter.
+providers:
+  - name: ollama-cloud
+    type: ollama
+    url: https://ollama.com/
+    api_key: "$OLLAMA_API_KEY"
+
+# name is the local alias config and --model refer to; model_name is the id
+# sent to the provider on the wire. Tags/sizes below were verified against
+# ollama.com/api/show: GLM-5.3 reports 1048576 context; 999424 leaves some
+# headroom. Flash reports vision; 5.3 does not. Max tokens is 32768, the
+# maximum for 5.3.
+models:
+  - name: main-model
+    provider: ollama-cloud
+    model_name: glm-5.3-flash
+    context_window: 999424
+    max_response_tokens: 32768
+    vision: true
+    reasoning_effort: high
