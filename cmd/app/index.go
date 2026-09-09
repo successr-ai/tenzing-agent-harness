@@ -18,6 +18,13 @@ const indexHTML = `<!DOCTYPE html>
     --red: #e74c3c;
     --green: #2ecc71;
     --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    /* Width of the centered column: 120 characters of transcript text
+       (63.25rem at the 14px body font — the mono stack's advance is 0.6em,
+       so 120 chars is ~1011px) plus the 1rem of horizontal padding each
+       strip carries. Not in ch: that unit resolves against each element's
+       own font size, which would leave the 12px status bar narrower than
+       the transcript. Retune if the body font size changes. */
+    --col: 65.25rem;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -29,6 +36,9 @@ const indexHTML = `<!DOCTYPE html>
     display: flex;
     flex-direction: column;
   }
+  /* One centered column: transcript, status bar and composer share --col
+     so their left edges line up. */
+  body > * { width: 100%; max-width: var(--col); margin-inline: auto; }
   #chat {
     flex: 1;
     overflow-y: auto;
