@@ -23,6 +23,10 @@ type Policy struct {
 	// default).
 	AskOrigins []string
 	Default    core.Decision // decision for unlisted tools
+	// Bash, when non-nil, refines the decision for the bash tool by matching
+	// the command itself (see BashRules). It can lower an AskUser to Allow
+	// or raise it to Deny, but never overrides a name-level Deny.
+	Bash *BashRules
 }
 
 // DefaultPolicy asks for anything that executes code or writes files — and
@@ -49,6 +53,7 @@ type Ext struct {
 	ask        map[string]struct{}
 	askOrigins []string
 	def        core.Decision
+	bash       *BashRules
 }
 
 func New(p Policy) *Ext {
@@ -58,6 +63,7 @@ func New(p Policy) *Ext {
 		ask:        toSet(p.Ask),
 		askOrigins: p.AskOrigins,
 		def:        p.Default,
+		bash:       p.Bash,
 	}
 }
 
@@ -90,6 +96,16 @@ func (e *Ext) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error {
 	case e.matchesAskOrigin(tcc.Origin):
 		decision = core.AskUser
 		reason = "tool origin requires approval by permission policy"
+	}
+
+	// Per-command bash rules refine the name-level decision. A name-level
+	// Deny is absolute; otherwise an allowed command drops to Allow (i.e.
+	// stops escalating) and a denied one is blocked outright.
+	if e.bash != nil && name == "bash" && decision != core.Deny {
+		if d, ok := e.bash.Verdict(bashCommand(tcc.Call.Input)); ok {
+			decision = d
+			reason = "bash command denied by permission policy"
+		}
 	}
 
 	if decision > tcc.Decision {

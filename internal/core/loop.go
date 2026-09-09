@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -262,6 +263,7 @@ func (l *Loop) executeBatched(ctx context.Context, iteration int, bc batchCall) 
 			Input:     bc.call.Input,
 			Output:    toolResult.Output,
 			Duration:  toolDuration.Round(time.Millisecond),
+			Metadata:  toolResult.Metadata,
 		})
 	}
 	return toolResult
@@ -560,6 +562,19 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 	if err := l.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
 		slog.Error("fsm reset after error", "runner", l.id, "error", err)
 	}
+	// A canceled context means the caller stopped the turn — that is an
+	// outcome, not a failure. Cancellation can surface from any ctx-aware
+	// call (the model, a tool, a context-store write), so it is classified
+	// once here rather than at every call site, and reported without the
+	// ErrorEvent and error-level log a genuine fault gets. A deadline
+	// (wall-clock budget, --timeout) is left as a failure: the turn ran out
+	// of room rather than being called off.
+	if errors.Is(loopErr, context.Canceled) {
+		slog.Info("loop canceled", "runner", l.id, "iterations", iteration,
+			"duration", time.Since(loopStart).Round(time.Millisecond), "at", loopErr)
+		return TurnResult{}, fmt.Errorf("turn canceled: %w", context.Canceled)
+	}
+
 	slog.Error("loop failed", "runner", l.id, "error", loopErr, "iterations", iteration, "duration", time.Since(loopStart).Round(time.Millisecond))
 	l.emit(ErrorEvent{
 		BaseEvent: NewBaseEvent(EventError, l.id),

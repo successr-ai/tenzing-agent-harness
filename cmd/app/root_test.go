@@ -291,6 +291,9 @@ func TestRootCmdModelPrecedence(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("TENZING_MODEL", tt.env)
 			t.Setenv("TENZING_CONFIG", tt.config)
+			// Isolate the ~/.config/tenzing fallback: without this the
+			// developer's own user config would satisfy the "no file" cases.
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			t.Cleanup(func() { models = emptyRegistry() })
 
 			orig := runPrintFn

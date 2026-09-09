@@ -87,5 +87,8 @@ func (t *WriteTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext)
 		t.tracker.Record(path, []byte(input.Content))
 	}
 
-	return tooldef.NewToolResult("File written: " + path), nil
+	// existing is nil when the file did not exist: DiffFiles then reports
+	// the whole content as additions.
+	diff := DiffFiles(input.FilePath, existing, []byte(input.Content))
+	return tooldef.NewToolResult("File written: "+path+" "+diff.Summary(), tooldef.WithMetadata(diffMetadata(diff))), nil
 }

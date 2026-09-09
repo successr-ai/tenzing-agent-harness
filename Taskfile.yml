@@ -8,3 +8,11 @@ tasks:
   ask:
     desc: 'Run one headless query and print the answer (task ask -- "your query")'
     cmd: go run ./cmd/app -p "{{.CLI_ARGS}}"
+
+  build:
+    desc: 'Build standalone binary to bin/tenzing (task build -- -ldflags ...)'
+    cmd: go build -o bin/tenzing {{.CLI_ARGS}} ./cmd/app
+
+  install:
+    desc: 'Install tenzing to ~/.local/bin'
+    cmd: go build -o {{.HOME}}/.local/bin/tenzing ./cmd/app

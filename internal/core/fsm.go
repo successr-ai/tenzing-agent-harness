@@ -44,7 +44,19 @@ type LoopFSM struct {
 	*fsm.FSM
 }
 
+// TransitionStates applies a transition, reporting nil when the machine is
+// already in the destination state.
+//
+// Cancellation is stripped from ctx first. A transition is in-memory
+// bookkeeping with no I/O to abort, and looplab/fsm abandons one mid-flight
+// when the context is done: it leaves the pending transition set without
+// advancing the state, so every later transition — the loop's terminal
+// reset included — fails with "previous transition did not complete", and
+// re-running it cannot help because it re-checks the same dead context.
+// That wedges the loop for the rest of the process. Context values (trace
+// IDs, logger state) are preserved.
 func (f *LoopFSM) TransitionStates(ctx context.Context, transition LoopTransition) error {
+	ctx = context.WithoutCancel(ctx)
 	err := f.Event(ctx, string(transition))
 	if err != nil {
 		var noTransition fsm.NoTransitionError

@@ -14,7 +14,8 @@ import (
 // per relevant main-agent event. Subagent events (different runner IDs) are
 // not part of the conversation and are skipped. todoSnapshot, when non-nil,
 // is called at each turn end to persist the plan (nil result → no entry).
-// The returned stop function unsubscribes.
+// The returned stop function unsubscribes and drains: queued entries are
+// written before it returns.
 func StartPersister(bus *eventbus.EventBus, store *Store, mainRunnerID string, todoSnapshot func() []todo.Task) (stop func()) {
 	isMain := func(runnerID string) bool { return runnerID == mainRunnerID }
 

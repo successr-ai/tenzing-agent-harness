@@ -168,6 +168,25 @@ func (s *Store) AppendToolResults(ctx context.Context, results []core.ToolResult
 	return nil
 }
 
+// Clear drops the conversation history entirely. Only call between turns:
+// clearing mid-turn would strand tool_use blocks that the loop is still
+// collecting results for.
+func (s *Store) Clear() {
+	s.Replace(nil)
+}
+
+// Replace swaps the history wholesale — session resume loading a persisted
+// conversation over the live one. Pending tool_use blocks go with it: they
+// belonged to the history being replaced, and the incoming one is already
+// self-consistent.
+func (s *Store) Replace(msgs []common.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.msgs = make([]common.Message, len(msgs))
+	copy(s.msgs, msgs)
+	s.pending = nil
+}
+
 // SetLLM swaps the compression-summary client (mid-session model
 // switching). Only call between turns. No-op when compression is disabled.
 func (s *Store) SetLLM(llm common.LLM) {

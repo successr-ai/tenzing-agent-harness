@@ -106,7 +106,7 @@ The same pattern serves the other roles: `WithSubagentLLM` and `WithBlackboardLL
 - **Permissions & read-only mode** — code-executing/file-writing tools require approval by default (`ApprovalRequestedEvent`, `POST /approve`, 120s timeout); `--read-only` / `WithReadOnly()` instead denies every tool not marked read-only with no prompts ever — reads, `advisor`, and `spawn_agent` (children equally gated) still run; `--no-permissions` / `WithPermissionsDisabled()` disables gating entirely
 - **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
 - **Session persistence** — conversations recorded as JSONL per working directory; resume with `--resume <id>` or `-c` (latest), manage over HTTP (`GET/DELETE/PATCH /sessions`, `GET /messages`)
-- **Unified config file** — `tenzing.yaml` holds every durable setting (models incl. the custom-model registry, advisor, subagent, budgets, permissions, MCP servers, serve settings); `--config` / `TENZING_CONFIG` pick the file (default `./tenzing.yaml`), precedence CLI flag > env var > file > default; model flags alternatively take an inline JSON definition (see Quick Start)
+- **Unified config file** — `tenzing.yaml` holds every durable setting (models incl. the custom-model registry, advisor, subagent, budgets, permissions, MCP servers, serve settings); `--config` / `TENZING_CONFIG` pick the file (default `./tenzing.yaml`, then `~/.config/tenzing/tenzing.yaml`), precedence CLI flag > env var > file > default; model flags alternatively take an inline JSON definition (see Quick Start)
 - **Project config & trust** — `./SYSTEM.md` replaces / `./APPEND_SYSTEM.md` appends to the system prompt, `./.tenzing/prompts` adds slash-command templates; project-local files load only for trusted directories (`--trust`, `POST /trust`, or `TENZING_PROJECT_TRUST=trust`), global `<UserConfigDir>/tenzing/` equivalents always load
 - **Cost tracking** — token usage (incl. prompt-cache tokens) and USD cost per model, priced from `tenzing.yaml` model costs; `GET /stats` + a `cost` SSE event
 - **Vision** — image input on vision-capable models: `@path.png` args in `-p` prompts, `images[]` on `POST /query`, paste/drag-drop in the chat UI
@@ -169,11 +169,13 @@ go run ./cmd/app --read-only                      # deny mutating tools, no appr
 go run ./cmd/app -p "describe @screenshot.png"
 ```
 
-The CLI resolves provider API keys from the conventional env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional). `--api-key` overrides the env var and `--base-url` overrides tenzing.yaml `base_url` and the provider default endpoints (e.g. `--base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"`). Optional env: `TENZING_CONFIG` (tenzing.yaml path, default `./tenzing.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
+The CLI resolves provider API keys from the conventional env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional). `--api-key` overrides the env var and `--base-url` overrides tenzing.yaml `base_url` and the provider default endpoints (e.g. `--base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"`). Optional env: `TENZING_CONFIG` (tenzing.yaml path, default `./tenzing.yaml` then `~/.config/tenzing/tenzing.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
 
 ## Config file (`tenzing.yaml`)
 
-One YAML file for every durable setting. Located via `--config <path>` > `TENZING_CONFIG` > `./tenzing.yaml`; a missing file at the default path is fine, a missing explicitly-named file is an error. Per setting, precedence is **CLI flag > env var > tenzing.yaml > default**. Unknown keys are a startup error, so typos fail loudly. All keys optional:
+One YAML file for every durable setting. Located via `--config <path>` > `TENZING_CONFIG` > `./tenzing.yaml` > `$XDG_CONFIG_HOME/tenzing/tenzing.yaml` (default `~/.config/tenzing/tenzing.yaml`, for settings shared across projects). A missing file at either probed path is fine, a missing explicitly-named file is an error.
+
+Path-valued keys (`system_file`, `nexus_config`, `mcp_servers[].command`) resolve **relative to the config file's own directory**, not the cwd — so a global `~/.config/tenzing/tenzing.yaml` can say `system_file: SYSTEM.md` and pick up `~/.config/tenzing/SYSTEM.md` from any working directory. Absolute paths are used as-is, and a bare `mcp_servers[].command` with no path separator (e.g. `npx`) stays a PATH lookup. The equivalent CLI flags (`--system`, `--nexus-config`) stay cwd-relative, like any other shell argument. Per setting, precedence is **CLI flag > env var > tenzing.yaml > default**. Unknown keys are a startup error, so typos fail loudly. All keys optional:
 
 ```yaml
 model: openrouter/some-model          # main model; ref or inline {provider,name,...}
@@ -195,13 +197,19 @@ thinking: false
 no_session: false
 no_context_files: false
 
-system_file: ""                        # file replacing the system prompt (--system)
+system_file: ""                        # file replacing the system prompt (--system); relative to this file
 base_url: ""                           # LLM endpoint override
-api_key: ""                            # works, but env vars / --api-key are preferred
+api_key: ""                            # $VAR / ${VAR} expand from the environment (api_key: "$OLLAMA_API_KEY")
 
 port: 8080                             # serve mode
 nexus_config: nexus.yaml
 debug: false
+
+permissions:                           # per-tool overrides of the default policy
+  allow: [Read, Write, Edit]           # a name listed here is dropped from the other lists
+  ask: []
+  deny: []
+  ask_origins: ["mcp:"]                # non-empty replaces the default prefixes
 
 mcp_servers:                           # mounted alongside any --mcp-server flags
   - name: fs
@@ -222,7 +230,7 @@ models:                                # custom model registry (replaces models.
 
 ### All options
 
-Every key, with its CLI/env equivalent (which override the file). Durations are Go duration strings (`"90s"`, `"5m"`). Model refs are `provider/name` or an inline JSON definition with the entry fields below.
+Every key, with its CLI/env equivalent (which override the file). Durations are Go duration strings (`"90s"`, `"5m"`). Model refs are `provider/name` or an inline JSON definition with the entry fields below. `$VAR` and `${VAR}` anywhere in the file are expanded from the environment before parsing; a reference to an unset variable is left as written.
 
 | Key | Type | Default | Overridden by | Description |
 |---|---|---|---|---|
@@ -242,14 +250,24 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `thinking` | bool | provider default | `--thinking` | Model reasoning on/off. |
 | `no_session` | bool | `false` | `--no-session` | Disable session persistence. |
 | `no_context_files` | bool | `false` | `--no-context-files` | Skip AGENTS.md context-file loading. |
-| `system_file` | path | unset | `--system` | File whose contents replace the system prompt. |
+| `system_file` | path | unset | `--system` | File whose contents replace the system prompt. Relative paths resolve against the config file's directory. |
 | `base_url` | URL | provider default | `--base-url` | LLM endpoint base URL; beats per-provider `models.entries[].base_url`. |
-| `api_key` | string | provider env var | `--api-key` | LLM API key. Prefer the provider env vars over a key on disk. |
+| `api_key` | string | provider env var | `--api-key` | LLM API key. Prefer the provider env vars, or reference one: `api_key: "$OLLAMA_API_KEY"`. |
 | `port` | int | `8080` | `--port`, `SERVER_PORT` | Serve-mode listen port. |
 | `nexus_config` | path | `nexus.yaml` | `--nexus-config`, `NEXUS_CONFIG` | Nexus channel config path. |
 | `debug` | bool | `false` | `--debug`, `LOG_DEBUG` | Trace-level logging to a fresh log file. |
+| `permissions` | section | unset | — | Per-tool overrides of the default permission policy; see below. |
 | `mcp_servers` | list | `[]` | — (additive with `--mcp-server`) | MCP servers to mount; file entries and flag entries both apply. |
 | `models` | section | empty | — | Custom model registry; see below. |
+
+`permissions` keys. The default policy asks for `bash`, `Write`, `Edit`, `repl`, `spawn_agent` and every `mcp:`-origin tool, and allows everything else. Each list here is merged into that default, and a tool named in one list is removed from the other two — so `allow: [Read, Write, Edit]` stops those prompts while `bash` and MCP tools keep asking. Names match case-insensitively. Precedence at call time is Deny > Ask > Allow > `ask_origins`.
+
+| Key | Type | Description |
+|---|---|---|
+| `allow` | list | Tools that run without approval. |
+| `ask` | list | Tools that require approval. |
+| `deny` | list | Tools that are always blocked. |
+| `ask_origins` | list | Mount-origin prefixes whose unlisted tools require approval. Non-empty replaces the default `["mcp:"]`. |
 
 `mcp_servers` entries:
 

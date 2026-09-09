@@ -56,6 +56,8 @@ func TestToWireCoversEveryCoreEvent(t *testing.T) {
 			pre + `llm.response` + mid + `,"data":{"model":"m","response_id":"id1","input_tokens":7,"output_tokens":8,"stop_reason":"end_turn","text":"txt"}}`},
 		{"tool succeeded", core.ToolSucceededEvent{BaseEvent: base(core.EventToolSucceeded), ToolName: "read", Input: "f.go", Output: "ok", Duration: 1500 * time.Millisecond},
 			pre + `tool.succeeded` + mid + `,"data":{"tool_name":"read","input":"f.go","output":"ok","duration_ms":1500}}`},
+		{"tool succeeded with metadata", core.ToolSucceededEvent{BaseEvent: base(core.EventToolSucceeded), ToolName: "Edit", Input: "f.go", Output: "Edit applied. +1 -1", Duration: time.Second, Metadata: map[string]string{"diff_added": "1"}},
+			pre + `tool.succeeded` + mid + `,"data":{"tool_name":"Edit","input":"f.go","output":"Edit applied. +1 -1","duration_ms":1000,"metadata":{"diff_added":"1"}}}`},
 		{"tool failed", core.ToolFailedEvent{BaseEvent: base(core.EventToolFailed), ToolName: "read", Input: "f.go", Error: "nope", Duration: time.Second},
 			pre + `tool.failed` + mid + `,"data":{"tool_name":"read","input":"f.go","error":"nope","duration_ms":1000}}`},
 		{"tool denied", core.ToolDeniedEvent{BaseEvent: base(core.EventToolDenied), ToolName: "bash", Input: "rm -rf", Reason: "requires approval"},

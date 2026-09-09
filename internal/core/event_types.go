@@ -87,6 +87,9 @@ type ToolSucceededEvent struct {
 	Input    string        `json:"input"`
 	Output   string        `json:"output"`
 	Duration time.Duration `json:"duration_ms"`
+	// Metadata carries the tool result's side-channel data — content meant
+	// for a driver rather than the model, such as Edit/Write's unified diff.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type ToolFailedEvent struct {

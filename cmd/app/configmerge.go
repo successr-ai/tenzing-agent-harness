@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
@@ -11,10 +13,26 @@ import (
 // a file; missing there is fine (builtins and flags only).
 const defaultConfigPath = "tenzing.yaml"
 
+// userConfigPath is the per-user fallback probed when there is no
+// ./tenzing.yaml: $XDG_CONFIG_HOME/tenzing/tenzing.yaml, defaulting to
+// ~/.config/tenzing/tenzing.yaml. Returns "" when neither var resolves.
+func userConfigPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "tenzing", defaultConfigPath)
+}
+
 // resolveConfigPath picks the tenzing.yaml location: --config flag >
-// TENZING_CONFIG env > ./tenzing.yaml. explicit reports whether the user
-// named the path (flag or env) — a missing file is then a startup error
-// instead of a silent skip.
+// TENZING_CONFIG env > ./tenzing.yaml > ~/.config/tenzing/tenzing.yaml.
+// explicit reports whether the user named the path (flag or env) — a missing
+// file is then a startup error instead of a silent skip. The two probed
+// paths stay non-explicit: absent is fine for both.
 func resolveConfigPath(flagValue string, flagChanged bool) (path string, explicit bool) {
 	if flagChanged {
 		return flagValue, true
@@ -22,7 +40,48 @@ func resolveConfigPath(flagValue string, flagChanged bool) (path string, explici
 	if v := os.Getenv("TENZING_CONFIG"); v != "" {
 		return v, true
 	}
+	if _, err := os.Stat(defaultConfigPath); err != nil {
+		if user := userConfigPath(); user != "" {
+			if _, err := os.Stat(user); err == nil {
+				return user, false
+			}
+		}
+	}
 	return defaultConfigPath, false
+}
+
+// resolveFilePaths rebases tenzing.yaml's path-valued keys onto the config
+// file's own directory, so a config living outside the working directory can
+// name files that sit beside it (e.g. system_file: SYSTEM.md next to a global
+// ~/.config/tenzing/tenzing.yaml). Absolute paths are left alone. This applies
+// only to values read from the file — CLI path flags stay cwd-relative, like
+// every other shell argument.
+//
+// Returns a new File; the caller's copy is untouched.
+func resolveFilePaths(f cfgfile.File, cfgPath string) cfgfile.File {
+	dir := filepath.Dir(cfgPath)
+	rebase := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(dir, p)
+	}
+
+	f.SystemFile = rebase(f.SystemFile)
+	f.NexusConfig = rebase(f.NexusConfig)
+
+	// A bare command name (no separator) is a PATH lookup, not a path —
+	// "npx" must not become "<cfgdir>/npx". Only ./x, ../x and a/b rebase.
+	servers := make([]cfgfile.MCPServer, len(f.MCPServers))
+	copy(servers, f.MCPServers)
+	for i, s := range servers {
+		if strings.ContainsRune(s.Command, filepath.Separator) || strings.HasPrefix(s.Command, "./") {
+			servers[i].Command = rebase(s.Command)
+		}
+	}
+	f.MCPServers = servers
+
+	return f
 }
 
 // mergeConfigFile applies tenzing.yaml values under the precedence
@@ -94,6 +153,11 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	}
 	if f.Debug && !changed("debug") && !present("LOG_DEBUG") {
 		cfg.Debug = true
+	}
+
+	if f.Permissions != nil {
+		policy := permissionPolicy(*f.Permissions)
+		cfg.PermissionPolicy = &policy
 	}
 
 	// Additive: file servers mount alongside --mcp-server ones.

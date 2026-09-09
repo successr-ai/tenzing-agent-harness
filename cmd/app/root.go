@@ -48,6 +48,9 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Path-valued keys are relative to the config file, not the cwd,
+			// so a global config can name files sitting beside it.
+			file = resolveFilePaths(file, cfgPath)
 
 			reg, err := buildRegistry(file.Models)
 			if err != nil {
@@ -99,6 +102,15 @@ func newRootCmd() *cobra.Command {
 			cfg.ProjectTrust = envCfg.ProjectTrust
 			mergeConfigFile(cfg, file, cmd.Flags().Changed, present)
 
+			// settings.json: per-command bash rules layered on the
+			// name-level permission policy tenzing.yaml just produced.
+			settingsPath, settingsExplicit := resolveSettingsPath(cfg.SettingsPath, cmd.Flags().Changed("settings"))
+			bashRules, err := loadSettingsFile(settingsPath, settingsExplicit)
+			if err != nil {
+				return err
+			}
+			applyBashRules(cfg, settingsPath, bashRules)
+
 			// Overrides for the LLM client factory: --base-url / tenzing.yaml
 			// beat provider defaults, --api-key beats provider env vars.
 			llms.baseURL = cfg.BaseURL
@@ -123,7 +135,8 @@ func newRootCmd() *cobra.Command {
 	}
 
 	fl := cmd.Flags()
-	fl.StringVar(&cfg.ConfigPath, "config", "", "YAML config file (default tenzing.yaml, env TENZING_CONFIG); CLI flags and env vars override its values")
+	fl.StringVar(&cfg.SettingsPath, "settings", "", "JSON per-command bash policy (default ./settings.json, then ~/.config/tenzing/settings.json; env TENZING_SETTINGS)")
+	fl.StringVar(&cfg.ConfigPath, "config", "", "YAML config file (default ./tenzing.yaml, then ~/.config/tenzing/tenzing.yaml; env TENZING_CONFIG); CLI flags and env vars override its values")
 	fl.StringVarP(&cfg.Prompt, "prompt", "p", "", "run one headless agent turn with this prompt, then exit (@path.png args attach images)")
 	fl.StringVar(&cfg.OutputFormat, "output-format", "text", "print-mode output: text (final answer) or json (JSONL events)")
 	fl.BoolVar(&cfg.ListModels, "list-models", false, "print known models and exit")

@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -81,25 +82,9 @@ func (t *EditTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 	}
 
 	content := string(data)
-	count := strings.Count(content, oldString)
-
-	if !replaceAll {
-		switch count {
-		case 0:
-			return tooldef.NewToolResult("old_string not found", tooldef.WithError()), nil
-		case 1:
-		default:
-			return tooldef.NewToolResult(fmt.Sprintf("old_string not unique: %d occurrences", count), tooldef.WithError()), nil
-		}
-	} else if count == 0 {
-		return tooldef.NewToolResult("old_string not found", tooldef.WithError()), nil
-	}
-
-	var updated string
-	if replaceAll {
-		updated = strings.ReplaceAll(content, oldString, newString)
-	} else {
-		updated = strings.Replace(content, oldString, newString, 1)
+	updated, err := applyEdit(content, oldString, newString, replaceAll)
+	if err != nil {
+		return tooldef.NewToolResult(err.Error(), tooldef.WithError()), nil
 	}
 
 	if err := writeFileAtomic(filePath, []byte(updated)); err != nil {
@@ -109,5 +94,23 @@ func (t *EditTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		t.tracker.Record(filePath, []byte(updated))
 	}
 
-	return tooldef.NewToolResult("Edit applied."), nil
+	diff := DiffFiles(input.FilePath, data, []byte(updated))
+	return tooldef.NewToolResult("Edit applied. "+diff.Summary(), tooldef.WithMetadata(diffMetadata(diff))), nil
+}
+
+// applyEdit performs the string replacement, returning the error the model
+// sees when old_string is missing or ambiguous. Shared with the approval
+// preview so both compute the same result.
+func applyEdit(content, oldString, newString string, replaceAll bool) (string, error) {
+	count := strings.Count(content, oldString)
+	if count == 0 {
+		return "", errors.New("old_string not found")
+	}
+	if !replaceAll && count > 1 {
+		return "", fmt.Errorf("old_string not unique: %d occurrences", count)
+	}
+	if replaceAll {
+		return strings.ReplaceAll(content, oldString, newString), nil
+	}
+	return strings.Replace(content, oldString, newString, 1), nil
 }

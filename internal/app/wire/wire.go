@@ -98,6 +98,9 @@ type toolSucceeded struct {
 	Input      string `json:"input"`
 	Output     string `json:"output"`
 	DurationMS int64  `json:"duration_ms"`
+	// Metadata is additive and omitted when empty, so existing consumers of
+	// this payload are unaffected and wire.Version stays put.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type toolFailed struct {
@@ -266,7 +269,7 @@ func ToWire(ev core.Event) Envelope {
 		env.Data = llmResponse{Model: e.Model, ResponseID: e.ResponseID, InputTokens: e.InputTokens, OutputTokens: e.OutputTokens, CacheReadInputTokens: e.CacheReadInputTokens, CacheCreationInputTokens: e.CacheCreationInputTokens, StopReason: e.StopReason, Text: e.Text}
 	case core.ToolSucceededEvent:
 		setBase(e.BaseEvent)
-		env.Data = toolSucceeded{ToolName: e.ToolName, Input: e.Input, Output: e.Output, DurationMS: e.Duration.Milliseconds()}
+		env.Data = toolSucceeded{ToolName: e.ToolName, Input: e.Input, Output: e.Output, DurationMS: e.Duration.Milliseconds(), Metadata: e.Metadata}
 	case core.ToolFailedEvent:
 		setBase(e.BaseEvent)
 		env.Data = toolFailed{ToolName: e.ToolName, Input: e.Input, Error: e.Error, DurationMS: e.Duration.Milliseconds()}

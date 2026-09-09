@@ -42,12 +42,21 @@ type Hooks struct {
 // safe to call after the bus is closed.
 func StartHooks(bus *EventBus, hooks Hooks) (stop func()) {
 	ch := bus.Subscribe(64)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for ev := range ch {
 			dispatch(ev, hooks)
 		}
 	}()
-	return func() { bus.Unsubscribe(ch) }
+	// Unsubscribe closes ch, so the loop drains whatever is already queued
+	// before exiting. stop() waits for that: a session record is complete
+	// before the harness rotates it away or closes it, rather than losing
+	// the events emitted just before the call.
+	return func() {
+		bus.Unsubscribe(ch)
+		<-done
+	}
 }
 
 func dispatch(ev core.Event, h Hooks) {

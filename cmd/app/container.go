@@ -145,7 +145,9 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	}
 	api.models = models
 	api.cwd = cwd
+	api.bashAllow = cfg.BashAllow
 	api.trustEnvDefault = cfg.ProjectTrust
+	api.debug = cfg.Debug
 
 	if nx != nil {
 		nx.Start(context.Background())

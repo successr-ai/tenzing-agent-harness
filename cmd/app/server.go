@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/builtins"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
@@ -44,6 +48,10 @@ type agentServer struct {
 	cwd             string
 	trustEnvDefault string
 
+	// debug mirrors --debug and is substituted into the index page: only a
+	// debug UI renders thinking text and tool output in full.
+	debug bool
+
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
 	closing  bool
@@ -57,8 +65,21 @@ type agentServer struct {
 	// Entries are removed when answered; timed-out entries are dropped when
 	// the same call ID can no longer arrive (Respond is idempotent, so a
 	// late answer to a timed-out request is a harmless no-op).
-	approvals   map[string]func(bool)
+	approvals   map[string]pendingApproval
 	approvalsMu sync.Mutex
+
+	// bashAllow persists "allow always" answers from /approve. nil disables
+	// that option (the endpoint then rejects an `allow` field).
+	bashAllow *bashAllowStore
+}
+
+// pendingApproval is one unanswered AskUser request. The tool name is kept
+// so /approve can reject an `allow` glob aimed at a non-bash call, and the
+// input so /preview can diff what an Edit/Write would do.
+type pendingApproval struct {
+	respond func(bool)
+	tool    string
+	input   string
 }
 
 // newAgentServer builds the server. pricing (model name → USD per MTok) may
@@ -72,7 +93,7 @@ func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *ne
 		onTurnEnd: onTurnEnd,
 		done:      make(chan struct{}),
 		clients:   make(map[*sseClient]struct{}),
-		approvals: make(map[string]func(bool)),
+		approvals: make(map[string]pendingApproval),
 		costs:     newCostTracker(pricing),
 	}
 
@@ -120,6 +141,14 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 			Path:        "/cancel",
 		},
 		Handler: s.handleCancel,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[previewInput, previewOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "preview",
+			Method:      http.MethodPost,
+			Path:        "/preview",
+		},
+		Handler: s.handlePreview,
 	})
 	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[approveInput, statusOutput, router.MapAuthInfo]{
 		Operation: huma.Operation{
@@ -185,6 +214,22 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 			Path:        "/messages",
 		},
 		Handler: s.handleMessages,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "clear",
+			Method:      http.MethodPost,
+			Path:        "/clear",
+		},
+		Handler: s.handleClear,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[resumeInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "resume",
+			Method:      http.MethodPost,
+			Path:        "/resume",
+		},
+		Handler: s.handleResume,
 	})
 	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[compactInput, statusOutput, router.MapAuthInfo]{
 		Operation: huma.Operation{
@@ -345,7 +390,7 @@ func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 			delete(subagents, e.RunnerID)
 		case core.ApprovalRequestedEvent:
 			s.approvalsMu.Lock()
-			s.approvals[e.CallID] = e.Respond
+			s.approvals[e.CallID] = pendingApproval{respond: e.Respond, tool: e.ToolName, input: e.Input}
 			s.approvalsMu.Unlock()
 		case core.LLMResponseEvent:
 			s.costs.track(e)
@@ -436,6 +481,9 @@ type stateOutput struct {
 		ConversationID string `json:"conversation_id" doc:"Main agent conversation ID (resume handle)"`
 		Model          string `json:"model" doc:"Active model"`
 		Vision         bool   `json:"vision" doc:"True when the active model accepts image input"`
+		ContextWindow  int    `json:"context_window" doc:"Active model's usable context window in tokens, 0 when unknown"`
+		Cwd            string `json:"cwd" doc:"Working directory, for shortening tool-call paths in the UI"`
+		Home           string `json:"home" doc:"User home directory, for ~-shortening tool-call paths in the UI"`
 		Tools          int    `json:"tools" doc:"Number of registered tools"`
 	}
 }
@@ -477,6 +525,12 @@ type messagesOutput struct {
 type messageSummary struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
+}
+
+type resumeInput struct {
+	Body struct {
+		ConversationID string `json:"conversation_id" doc:"Recorded session to load into the running harness"`
+	}
 }
 
 type compactInput struct {
@@ -589,6 +643,13 @@ func (s *agentServer) runTurn(ctx context.Context, cancel context.CancelFunc, re
 
 		answer, err := s.harness.RunTurnWithImages(ctx, req.query, req.images)
 		if err != nil {
+			// A cancelled turn is the user's own doing — report it as an
+			// outcome, not as a failure the way a real fault is reported.
+			if errors.Is(err, context.Canceled) {
+				slog.Info("turn canceled", "query", req.query)
+				s.broadcastSSEJSON("canceled", map[string]string{"query": req.query})
+				return
+			}
 			s.broadcastSSEJSON("error", map[string]string{"error": err.Error()})
 			return
 		}
@@ -699,6 +760,9 @@ func (s *agentServer) handleState(_ context.Context, _ router.MapAuthInfo, _ *st
 	out.Body.ConversationID = s.harness.ConversationID()
 	out.Body.Model = s.harness.GetCurrentModel()
 	out.Body.Vision = s.harness.SupportsVision()
+	out.Body.ContextWindow = contextWindow(s.harness.CurrentModel())
+	out.Body.Cwd = s.cwd
+	out.Body.Home, _ = os.UserHomeDir() // empty on failure: the UI just skips ~-shortening
 	out.Body.Tools = len(s.harness.ToolDefinitions())
 	return out, nil
 }
@@ -780,25 +844,101 @@ type approveInput struct {
 	Body struct {
 		CallID   string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
 		Approved bool   `json:"approved" doc:"true to run the tool, false to deny"`
+		Allow    string `json:"allow,omitempty" doc:"bash glob to add to the settings file's allow list; implies approved, bash calls only"`
 	}
 }
 
+// handleApprove answers one pending AskUser request. A non-empty `allow` is
+// the "allow always" answer: the glob is persisted to the settings file and
+// applied to the running session before the call is approved, so matching
+// commands stop prompting for the rest of the session.
 func (s *agentServer) handleApprove(_ context.Context, _ router.MapAuthInfo, in *approveInput) (*statusOutput, error) {
+	pattern := strings.TrimSpace(in.Body.Allow)
+	if in.Body.Allow != "" && pattern == "" {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "allow must not be blank")
+	}
+
 	s.approvalsMu.Lock()
-	respond, ok := s.approvals[in.Body.CallID]
-	delete(s.approvals, in.Body.CallID)
+	pending, ok := s.approvals[in.Body.CallID]
+	if ok && pattern == "" {
+		delete(s.approvals, in.Body.CallID)
+	}
 	s.approvalsMu.Unlock()
 
 	if !ok {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no pending approval for call_id")
 	}
-	respond(in.Body.Approved)
+
+	// Persist before answering: a failed write must leave the request
+	// pending so the user can retry or fall back to a plain approve.
+	if pattern != "" {
+		if s.bashAllow == nil {
+			return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no settings file configured for allow")
+		}
+		if pending.tool != "bash" {
+			return nil, srverrors.Wrap(srverrors.ErrBadRequest, "allow applies to bash calls only")
+		}
+		if err := s.bashAllow.Add(pattern); err != nil {
+			return nil, err
+		}
+		s.approvalsMu.Lock()
+		delete(s.approvals, in.Body.CallID)
+		s.approvalsMu.Unlock()
+	}
+
+	approved := in.Body.Approved || pattern != ""
+	pending.respond(approved)
 
 	out := &statusOutput{}
-	if in.Body.Approved {
+	switch {
+	case pattern != "":
+		out.Body.Status = "allowed"
+	case approved:
 		out.Body.Status = "approved"
-	} else {
+	default:
 		out.Body.Status = "denied"
+	}
+	return out, nil
+}
+
+type previewInput struct {
+	Body struct {
+		CallID string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
+	}
+}
+
+type previewOutput struct {
+	Body struct {
+		Diff    string `json:"diff,omitempty" doc:"Unified diff the pending call would produce"`
+		Added   int    `json:"added"`
+		Removed int    `json:"removed"`
+		Omitted string `json:"omitted,omitempty" doc:"Why the diff body is absent: too large, binary, ..."`
+		Error   string `json:"error,omitempty" doc:"Why no diff could be computed; the call is still answerable"`
+	}
+}
+
+// handlePreview reports the diff a pending Edit/Write approval would produce.
+// Read-only: the request stays pending either way. A call that cannot be
+// previewed (wrong tool, unreadable file, old_string not found) reports the
+// reason in `error` rather than failing the request — the user still has to
+// approve or deny.
+func (s *agentServer) handlePreview(_ context.Context, _ router.MapAuthInfo, in *previewInput) (*previewOutput, error) {
+	s.approvalsMu.Lock()
+	pending, ok := s.approvals[in.Body.CallID]
+	s.approvalsMu.Unlock()
+	if !ok {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no pending approval for call_id")
+	}
+
+	out := &previewOutput{}
+	d, previewable, err := builtins.PreviewDiff(s.cwd, pending.tool, pending.input)
+	switch {
+	case !previewable:
+		out.Body.Error = "no preview for " + pending.tool
+	case err != nil:
+		out.Body.Error = err.Error()
+	default:
+		out.Body.Diff, out.Body.Added, out.Body.Removed, out.Body.Omitted = d.Text, d.Added, d.Removed, d.Omitted
 	}
 	return out, nil
 }
@@ -844,6 +984,26 @@ func (s *agentServer) handleTrustSet(_ context.Context, _ router.MapAuthInfo, in
 }
 
 // --- Runtime controls: compaction, thinking, model, stats ---
+
+func (s *agentServer) handleClear(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statusOutput, error) {
+	if err := s.harness.Clear(); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	s.costs.reset()
+	out := &statusOutput{}
+	out.Body.Status = "context cleared, now " + s.harness.ConversationID()
+	return out, nil
+}
+
+func (s *agentServer) handleResume(_ context.Context, _ router.MapAuthInfo, in *resumeInput) (*statusOutput, error) {
+	if err := s.harness.Resume(strings.TrimSpace(in.Body.ConversationID)); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	s.costs.reset()
+	out := &statusOutput{}
+	out.Body.Status = "resumed " + s.harness.ConversationID()
+	return out, nil
+}
 
 func (s *agentServer) handleCompact(ctx context.Context, _ router.MapAuthInfo, in *compactInput) (*statusOutput, error) {
 	if err := s.harness.Compact(ctx, strings.TrimSpace(in.Body.Instructions)); err != nil {
@@ -1001,7 +1161,22 @@ func (s *agentServer) handleMessages(_ context.Context, _ router.MapAuthInfo, _ 
 	return out, nil
 }
 
+// contextWindow reports the window the model actually runs at: the
+// default window when the model declares one (Ollama's num_ctx can sit
+// well below the architecture's maximum), otherwise the full size. Zero
+// means unknown — the UI hides its context gauge rather than dividing by
+// a guess.
+func contextWindow(m common.Model) int {
+	if m == nil {
+		return 0
+	}
+	if n := m.GetDefaultContextWindow(); n > 0 {
+		return n
+	}
+	return m.GetContextWindowSize()
+}
+
 func (s *agentServer) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(indexHTML))
+	w.Write([]byte(strings.Replace(indexHTML, "__DEBUG__", strconv.FormatBool(s.debug), 1)))
 }

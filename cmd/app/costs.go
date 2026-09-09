@@ -43,6 +43,15 @@ func newCostTracker(pricing map[string]config.CostEntry) *costTracker {
 	return &costTracker{pricing: pricing, byModel: map[string]*modelUsage{}}
 }
 
+// reset zeroes usage, for /clear and /resume: the counters describe the
+// conversation in the window, and that conversation just changed. Pricing
+// is configuration, not usage, so it survives.
+func (c *costTracker) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byModel = map[string]*modelUsage{}
+}
+
 func (c *costTracker) track(e core.LLMResponseEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

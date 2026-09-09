@@ -8,6 +8,7 @@ import (
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
@@ -41,11 +42,14 @@ type cliConfig struct {
 	ApprovalTimeoutSet bool
 	NoPermissions      bool
 	SkipPermissions    bool
-	ReadOnly           bool
-	Thinking           bool
-	ThinkingSet        bool
-	NoSession          bool
-	NoContextFiles     bool
+	// PermissionPolicy replaces the default policy; nil = default. Set only
+	// by tenzing.yaml's `permissions:` section (no flag).
+	PermissionPolicy *permissions.Policy
+	ReadOnly         bool
+	Thinking         bool
+	ThinkingSet      bool
+	NoSession        bool
+	NoContextFiles   bool
 
 	// prompt / sessions / trust
 	SystemFile     string // file whose contents replace the system prompt
@@ -55,7 +59,11 @@ type cliConfig struct {
 	Timeout        time.Duration
 
 	// wiring
-	ConfigPath       string             // --config; "" = TENZING_CONFIG or ./tenzing.yaml
+	ConfigPath   string // --config; "" = TENZING_CONFIG or ./tenzing.yaml
+	SettingsPath string // --settings; "" = TENZING_SETTINGS or ./settings.json
+	// BashAllow appends approved globs to the resolved settings file and to
+	// PermissionPolicy.Bash. Set alongside PermissionPolicy in RunE.
+	BashAllow        *bashAllowStore
 	MCPServers       []string           // --mcp-server "name=cmd args" strings
 	MCPServerConfigs []mcp.ServerConfig // pre-parsed servers from tenzing.yaml
 	ConversationID   string
@@ -142,6 +150,9 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	}
 	if cfg.ApprovalTimeoutSet {
 		opts = append(opts, harness.WithApprovalTimeout(cfg.ApprovalTimeout))
+	}
+	if cfg.PermissionPolicy != nil {
+		opts = append(opts, harness.WithPermissionPolicy(*cfg.PermissionPolicy))
 	}
 	if cfg.NoPermissions {
 		opts = append(opts, harness.WithPermissionsDisabled())

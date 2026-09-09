@@ -6,11 +6,11 @@
 // Precedence is applied by cmd/app, not here: CLI flag > env var >
 // tenzing.yaml > default. Scalars whose zero value is a meaningful setting
 // (subagent_depth, approval_timeout, thinking, port) are pointers so the
-// merge can tell "set to zero" from "omitted".
+// merge can tell "set to zero" from "omitted". $VAR / ${VAR} references are
+// expanded from the environment before parsing.
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -55,7 +55,23 @@ type File struct {
 
 	MCPServers []MCPServer `yaml:"mcp_servers"`
 
+	// Permissions overrides the default tool permission policy per tool
+	// name. Nil means the default policy is used unchanged.
+	Permissions *PermissionsSection `yaml:"permissions"`
+
 	Models ModelsSection `yaml:"models"`
+}
+
+// PermissionsSection overrides the default permission policy. A tool named
+// in one list is removed from the other two, so `allow: [Write, Edit]` is
+// enough to stop those prompts while bash and MCP tools keep asking. Names
+// match case-insensitively. AskOrigins, when non-empty, replaces the default
+// origin prefixes ("mcp:") entirely.
+type PermissionsSection struct {
+	Allow      []string `yaml:"allow"`
+	Deny       []string `yaml:"deny"`
+	Ask        []string `yaml:"ask"`
+	AskOrigins []string `yaml:"ask_origins"`
 }
 
 // MCPServer mounts one MCP server (structured form of --mcp-server's
@@ -136,7 +152,7 @@ func Load(path string, explicit bool) (File, bool, error) {
 	}
 
 	var f File
-	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec := yaml.NewDecoder(strings.NewReader(expandEnv(string(data))))
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {
 		// An empty file decodes to EOF; treat it as an all-defaults config.
@@ -153,6 +169,19 @@ func Load(path string, explicit bool) (File, bool, error) {
 		return File{}, false, fmt.Errorf("config %s: %w", path, err)
 	}
 	return f, true, nil
+}
+
+// expandEnv substitutes $VAR / ${VAR} from the environment across the whole
+// file, so secrets can live in the environment and be referenced from disk
+// (api_key: "$OLLAMA_API_KEY"). References to unset variables are left as
+// written rather than blanked, so a typo is visible instead of silent.
+func expandEnv(s string) string {
+	return os.Expand(s, func(name string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		return "$" + name
+	})
 }
 
 func (f File) validate() error {

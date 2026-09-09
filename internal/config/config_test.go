@@ -172,3 +172,30 @@ func TestLoad_EmptyFile(t *testing.T) {
 		t.Errorf("empty file should decode to zero File, got %+v", f)
 	}
 }
+
+func TestLoad_ExpandsEnv(t *testing.T) {
+	t.Setenv("TENZING_TEST_KEY", "sk-secret")
+
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"bare", "api_key: $TENZING_TEST_KEY", "sk-secret"},
+		{"braced", `api_key: "${TENZING_TEST_KEY}"`, "sk-secret"},
+		{"unset left alone", "api_key: $TENZING_TEST_MISSING", "$TENZING_TEST_MISSING"},
+		{"no reference", "api_key: plain", "plain"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, _, err := Load(writeFile(t, tt.yaml), true)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if f.APIKey != tt.want {
+				t.Errorf("APIKey = %q, want %q", f.APIKey, tt.want)
+			}
+		})
+	}
+}

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -323,4 +325,48 @@ func TestStateEndpoint(t *testing.T) {
 	}
 	agent.gate <- struct{}{}
 	agent.gate <- struct{}{}
+}
+
+// TestHandleIndexDebugFlag proves the index page carries the server's
+// --debug state as the DEBUG constant the UI gates verbose thinking and
+// tool output on, and that no placeholder survives.
+func TestHandleIndexDebugFlag(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		s := &agentServer{debug: debug}
+		rec := httptest.NewRecorder()
+		s.handleIndex(rec, httptest.NewRequest("GET", "/", nil))
+
+		body := rec.Body.String()
+		want := "const DEBUG = " + strconv.FormatBool(debug) + ";"
+		if !strings.Contains(body, want) {
+			t.Errorf("debug=%v: index missing %q", debug, want)
+		}
+		if strings.Contains(body, "__DEBUG__") {
+			t.Errorf("debug=%v: placeholder not substituted", debug)
+		}
+	}
+}
+
+// TestContextWindow proves the status gauge's denominator prefers the
+// window the model actually runs at over its architectural maximum, and
+// reports 0 (gauge hidden) when neither is known.
+func TestContextWindow(t *testing.T) {
+	tests := []struct {
+		name  string
+		model common.Model
+		want  int
+	}{
+		{"default window wins over maximum", common.ModelDefinition{ContextWindowSize: 200000, DefaultContextWindow: 32768}, 32768},
+		{"maximum used when no default", common.ModelDefinition{ContextWindowSize: 200000}, 200000},
+		{"unknown when neither set", common.ModelDefinition{}, 0},
+		{"unknown when no model", nil, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := contextWindow(tt.model); got != tt.want {
+				t.Errorf("contextWindow() = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }

@@ -50,10 +50,15 @@ type Harness struct {
 	currentModel common.Model
 
 	// Session persistence (nil/empty when WithSessionDisabled).
-	sessionStore *session.Store
-	stopSession  func()
-	sessionDir   string
-	cwd          string
+	// conversationID is the on-disk identity, which Clear and Resume rotate;
+	// the runner ID (the event-stream identity) is fixed for the harness's
+	// life. sessionMu guards the three fields the rotation swaps.
+	sessionMu      sync.Mutex
+	sessionStore   *session.Store
+	stopSession    func()
+	sessionDir     string
+	conversationID string
+	cwd            string
 
 	promptTemplates *prompttmpl.Registry
 
@@ -417,6 +422,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		currentModel:    mainLLM.GetModel(),
 		sessionStore:    sessionStore,
 		stopSession:     stopSession,
+		conversationID:  mainRunnerID,
 		sessionDir:      sessionDir,
 		cwd:             cwd,
 		promptTemplates: promptTemplates,
@@ -507,12 +513,15 @@ func (h *Harness) Shutdown() {
 		if h.stopMemoryHook != nil {
 			h.stopMemoryHook()
 		}
+		// Under sessionMu: a concurrent Clear/Resume rotation swaps both.
+		h.sessionMu.Lock()
 		if h.stopSession != nil {
 			h.stopSession()
 		}
 		if h.sessionStore != nil {
 			h.sessionStore.Close()
 		}
+		h.sessionMu.Unlock()
 		// Session-end hooks (blackboard close, …) degrade on error and get a
 		// bounded window to clean up.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -541,10 +550,90 @@ func (h *Harness) SystemPrompt() string {
 	return h.mainAgentRunner.SystemPrompt()
 }
 
-// ConversationID is the main agent's ID — the handle for resuming this
-// conversation later via WithConversationID.
+// ConversationID is the handle for resuming this conversation later via
+// WithConversationID. It starts as the main agent's runner ID and moves
+// when Clear or Resume rotates the session record.
 func (h *Harness) ConversationID() string {
-	return h.mainAgentRunner.ID()
+	h.sessionMu.Lock()
+	defer h.sessionMu.Unlock()
+	return h.conversationID
+}
+
+// Clear drops the conversation history and starts a new session record, so
+// the cleared transcript stays on disk under the old ID and the harness
+// continues under a fresh one. Only between turns.
+func (h *Harness) Clear() error {
+	if !h.idle() {
+		return errBusy
+	}
+	h.mainStore.Clear()
+	h.rotateSession(runner.NewID())
+	return nil
+}
+
+// Resume loads a persisted conversation over the live one: its history
+// replaces the current context, its thinking preference is reapplied, its
+// todo list is restored, and persistence continues appending to that
+// conversation's own record. Only between turns.
+func (h *Harness) Resume(conversationID string) error {
+	if !h.idle() {
+		return errBusy
+	}
+	if conversationID == "" {
+		return fmt.Errorf("conversation ID is required")
+	}
+	if h.sessionDir == "" {
+		return fmt.Errorf("session persistence is disabled")
+	}
+
+	res, err := session.Load(h.sessionDir, h.cwd, conversationID)
+	if err != nil {
+		return fmt.Errorf("load session %s: %w", conversationID, err)
+	}
+	if res == nil {
+		return fmt.Errorf("no session %s recorded for this directory", conversationID)
+	}
+
+	h.mainStore.Replace(res.History)
+	if len(res.Tasks) > 0 {
+		if err := h.todoFile.WriteTasks(res.Tasks); err != nil {
+			slog.Warn("session resume: restoring todo list failed", "error", err)
+		}
+	}
+	h.rotateSession(conversationID)
+	// Thinking last: it emits an event, so it should not fire before the
+	// history and session identity are the resumed conversation's.
+	if res.Thinking != nil {
+		if err := h.SetThinking(*res.Thinking); err != nil {
+			slog.Warn("session resume: restoring thinking preference failed", "error", err)
+		}
+	}
+	slog.Info("session resumed live", "conversation_id", conversationID, "messages", len(res.History), "tasks", len(res.Tasks))
+	return nil
+}
+
+// rotateSession points persistence at conversation id: the old record is
+// closed and a new store opened (appending, when a file for id already
+// exists). The persister is restarted against the unchanged runner ID — it
+// filters events by that, not by the conversation identity. A harness with
+// persistence disabled only records the new ID.
+func (h *Harness) rotateSession(id string) {
+	h.sessionMu.Lock()
+	defer h.sessionMu.Unlock()
+
+	h.conversationID = id
+	if h.sessionStore == nil {
+		return
+	}
+	if h.stopSession != nil {
+		h.stopSession()
+	}
+	h.sessionStore.Close()
+	h.sessionStore = session.NewStore(h.sessionDir, h.cwd, id, h.CurrentModel().GetName(), time.Now)
+	h.stopSession = session.StartPersister(h.eventBus, h.sessionStore, h.mainAgentRunner.ID(), func() []todo.Task {
+		tasks, _ := h.todoFile.ReadTasks()
+		return tasks
+	})
 }
 
 // RunTurn runs one agent turn. A query invoking a registered prompt

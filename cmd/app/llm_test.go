@@ -24,6 +24,12 @@ func TestRootCmdWiresLLMOverrides(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Isolate from the developer's own tenzing.yaml: without this the
+			// config fallback finds ~/.config/tenzing/tenzing.yaml and its
+			// api_key fills the flag-unset case.
+			t.Setenv("TENZING_CONFIG", "")
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 			origPrint := runPrintFn
 			origBaseURL, origAPIKey := llms.baseURL, llms.apiKey
 			t.Cleanup(func() {
