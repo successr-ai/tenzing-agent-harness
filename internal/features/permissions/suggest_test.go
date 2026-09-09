@@ -127,3 +127,19 @@ func TestSuggestDiscardRedirect(t *testing.T) {
 		t.Errorf("Suggest = (%q, %q), want (\"ls *\", \"\")", glob, reason)
 	}
 }
+
+// A suggestion has to cover the expression it was derived from, including an
+// argument-less one — otherwise accepting it makes no progress and the same
+// prompt returns forever.
+func TestSuggestCoversArgumentlessExpression(t *testing.T) {
+	r := NewBashRules(nil, nil)
+	glob, _ := r.Suggest("grep -n x f | head")
+	r.AllowPattern(glob)
+	if glob, _ = r.Suggest("grep -n x f | head"); glob != "head *" {
+		t.Fatalf("second suggestion = %q, want \"head *\"", glob)
+	}
+	r.AllowPattern(glob)
+	if d, ok := r.Verdict("grep -n x f | head"); !ok || d != core.Allow {
+		t.Errorf("bare `head` still uncovered by %q (decision %v, ok %v)", "head *", d, ok)
+	}
+}

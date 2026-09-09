@@ -503,6 +503,17 @@ function attachDiff(el, text) {
   el.appendChild(toggle);
 }
 
+// outputPreview is the body of a plain result line: up to three lines of
+// output verbatim, with a '+ N lines' tail when there are more. Blank lines
+// don't count. Continuations line up under the ⎿ marker's text.
+function outputPreview(output) {
+  const lines = (output || '').split('\n').filter(l => l.trim()).map(l => brief(l, 80));
+  if (lines.length === 0) return '0 lines';
+  const rest = lines.length - 3;
+  const head = lines.slice(0, 3).join('\n   ');
+  return rest <= 0 ? head : head + '\n   + ' + rest + ' line' + (rest === 1 ? '' : 's');
+}
+
 function toolResult(d, output, isError) {
   const meta = d.data.metadata;
   const summary = isError ? null : diffSummary(meta);
@@ -510,10 +521,9 @@ function toolResult(d, output, isError) {
     // Claude Code-style continuation line under the ⏺ call line: outcome
     // only, no tool output — except an Edit/Write diff, which is the whole
     // point of the line.
-    const n = (output || '').split('\n').filter(l => l.trim()).length;
     const el = addMsg('tool result', isError
       ? '⎿  error: ' + brief(output, 80)
-      : '⎿  ' + (summary || n + ' line' + (n === 1 ? '' : 's')));
+      : '⎿ ' + (summary || outputPreview(output)));
     if (summary) attachDiff(el, meta.diff);
     return;
   }
@@ -551,7 +561,7 @@ es.addEventListener('approval.requested', e => {
   // stop prompting. Prefilled locally with the command's first word + ' *',
   // then refined by /suggest, which knows the live allow list and proposes a
   // rule for the first expression it does not already cover.
-  const isBash = d.data.tool_name === 'bash';
+  const isBash = (d.data.tool_name || '').toLowerCase() === 'bash';
   let always, pattern;
   if (isBash) {
     pattern = document.createElement('input');

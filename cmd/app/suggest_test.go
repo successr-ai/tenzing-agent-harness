@@ -75,3 +75,24 @@ func TestHandleSuggest(t *testing.T) {
 		}
 	})
 }
+
+// The pending call's tool name is matched case-insensitively: a harness that
+// registers the tool as "Bash" still gets a glob suggestion.
+func TestHandleSuggestToolNameCase(t *testing.T) {
+	s := &agentServer{approvals: map[string]pendingApproval{
+		"c1": {respond: func(bool) {}, tool: "Bash", input: `{"command":"head -3 f"}`},
+	}}
+	s.bashAllow = &bashAllowStore{
+		path:  filepath.Join(t.TempDir(), "settings.json"),
+		rules: permissions.NewBashRules(nil, nil),
+	}
+	in := &suggestInput{}
+	in.Body.CallID = "c1"
+	out, err := s.handleSuggest(context.Background(), nil, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Body.Glob != "head *" {
+		t.Errorf("glob = %q, reason = %q; want \"head *\"", out.Body.Glob, out.Body.Reason)
+	}
+}

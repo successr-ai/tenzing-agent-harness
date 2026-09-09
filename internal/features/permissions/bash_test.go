@@ -294,3 +294,33 @@ func TestBashRulesEnvPrefix(t *testing.T) {
 		})
 	}
 }
+
+// Command rules apply whatever case the harness registered the tool under:
+// an allowlisted command stops the policy escalating to AskUser, and an
+// uncovered one still escalates, for every spelling of the tool name.
+func TestBashRulesToolNameCaseInsensitive(t *testing.T) {
+	p := DefaultPolicy()
+	p.Bash = NewBashRules([]string{"ls *"}, nil)
+	ext := New(p)
+
+	decide := func(t *testing.T, name, command string) core.Decision {
+		t.Helper()
+		tcc := &core.ToolCallContext{
+			Call:     &core.ToolCall{ID: "c1", Name: name, Input: `{"command":"` + command + `"}`},
+			Decision: core.Allow,
+		}
+		if err := ext.OnToolCall(context.Background(), tcc); err != nil {
+			t.Fatalf("OnToolCall: %v", err)
+		}
+		return tcc.Decision
+	}
+
+	for _, name := range []string{"bash", "Bash", "BASH"} {
+		if d := decide(t, name, "ls -l"); d != core.Allow {
+			t.Errorf("%s allowlisted command: decision = %v, want Allow", name, d)
+		}
+		if d := decide(t, name, "rm -rf /"); d != core.AskUser {
+			t.Errorf("%s uncovered command: decision = %v, want AskUser", name, d)
+		}
+	}
+}

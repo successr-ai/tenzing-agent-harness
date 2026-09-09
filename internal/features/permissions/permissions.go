@@ -101,7 +101,9 @@ func (e *Ext) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error {
 	// Per-command bash rules refine the name-level decision. A name-level
 	// Deny is absolute; otherwise an allowed command drops to Allow (i.e.
 	// stops escalating) and a denied one is blocked outright.
-	if e.bash != nil && name == "bash" && decision != core.Deny {
+	// The tool name is matched case-insensitively: a harness that registers
+	// the tool as "Bash" gets the same command rules as one using "bash".
+	if e.bash != nil && strings.EqualFold(name, "bash") && decision != core.Deny {
 		if d, ok := e.bash.Verdict(bashCommand(tcc.Call.Input)); ok {
 			decision = d
 			reason = "bash command denied by permission policy"

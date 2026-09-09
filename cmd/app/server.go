@@ -883,7 +883,7 @@ func (s *agentServer) handleApprove(_ context.Context, _ router.MapAuthInfo, in 
 		if s.bashAllow == nil {
 			return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no settings file configured for allow")
 		}
-		if pending.tool != "bash" {
+		if !strings.EqualFold(pending.tool, "bash") {
 			return nil, srverrors.Wrap(srverrors.ErrBadRequest, "allow applies to bash calls only")
 		}
 		if err := s.bashAllow.Add(pattern); err != nil {
@@ -979,7 +979,7 @@ func (s *agentServer) handleSuggest(_ context.Context, _ router.MapAuthInfo, in 
 
 	out := &suggestOutput{}
 	switch {
-	case pending.tool != "bash":
+	case !strings.EqualFold(pending.tool, "bash"):
 		out.Body.Reason = "no glob for " + pending.tool
 	case s.bashAllow == nil:
 		out.Body.Reason = "no settings file configured for allow"

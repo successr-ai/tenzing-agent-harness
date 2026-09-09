@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
@@ -19,7 +20,8 @@ const defaultSettingsPath = "settings.json"
 // name-level `permissions:` section of tenzing.yaml. `permissions` maps a
 // tool name to its rules; only "bash" is honoured today (it is the only tool
 // whose input is a command line to glob-match), and other tool keys are
-// ignored, as are other top-level keys.
+// ignored, as are other top-level keys. Tool names are matched
+// case-insensitively, so "Bash" and "bash" name the same tool.
 //
 //	{"permissions": {"bash": {"allow": ["ls *"], "deny": ["rm -rf *"]}}}
 type settingsFile struct {
@@ -74,11 +76,25 @@ func loadSettingsFile(path string, explicit bool) (*permissions.BashRules, error
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("settings %s: %w", path, err)
 	}
-	return f.Permissions[bashKey], nil
+	_, rules, _ := lookupTool(f.Permissions, bashKey)
+	return rules, nil
 }
 
 // bashKey is the only tool name settings.json's permissions map honours.
 const bashKey = "bash"
+
+// lookupTool finds the permissions entry for a tool, matching the map's keys
+// against the name case-insensitively. key is the spelling the file actually
+// used, so a rewrite can keep it rather than adding a second entry that
+// differs only in case.
+func lookupTool[T any](m map[string]T, tool string) (key string, v T, ok bool) {
+	for k, val := range m {
+		if strings.EqualFold(k, tool) {
+			return k, val, true
+		}
+	}
+	return tool, v, false
+}
 
 // applyBashRules layers settings.json's per-command rules onto whatever
 // name-level policy tenzing.yaml produced (or the default, when it named no
@@ -150,7 +166,8 @@ func writeBashSection(path string, allow, deny []string) error {
 	if err != nil {
 		return fmt.Errorf("settings %s: %w", path, err)
 	}
-	perms[bashKey] = section
+	key, _, _ := lookupTool(perms, bashKey)
+	perms[key] = section
 	if doc["permissions"], err = json.Marshal(perms); err != nil {
 		return fmt.Errorf("settings %s: %w", path, err)
 	}

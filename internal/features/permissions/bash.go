@@ -116,6 +116,14 @@ func matchAny(patterns []string, s string) bool {
 		if matchGlob(p, s) {
 			return true
 		}
+		// A trailing " *" reads as "with any arguments", and no arguments
+		// is a case of that: `head *` covers a bare `head` in `grep x f |
+		// head`. Without this a rule can never cover the argument-less form,
+		// and on the deny side it would leave `git commit` open to a rule
+		// written as `git commit *`.
+		if strings.HasSuffix(p, " *") && s == strings.TrimSuffix(p, " *") {
+			return true
+		}
 	}
 	return false
 }

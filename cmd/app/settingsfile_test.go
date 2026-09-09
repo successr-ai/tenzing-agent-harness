@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
@@ -299,4 +300,51 @@ func TestBashAllowStoreAdd(t *testing.T) {
 			t.Error("want the live rules untouched after a failed write")
 		}
 	})
+}
+
+// Tool names in the permissions map are matched case-insensitively, and a
+// rewrite keeps the spelling the file already used rather than adding a
+// second entry differing only in case.
+func TestSettingsToolNameCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"permissions":{"Bash":{"allow":["ls *"],"deny":[]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := loadSettingsFile(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules == nil {
+		t.Fatal(`"Bash" key was ignored; want it read as the bash rules`)
+	}
+	if allow, _ := rules.Lists(); len(allow) != 1 || allow[0] != "ls *" {
+		t.Fatalf("allow = %v", allow)
+	}
+
+	store := &bashAllowStore{path: path, rules: rules}
+	if err := store.Add("head *"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Permissions map[string]json.RawMessage `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Permissions) != 1 {
+		t.Fatalf("permissions = %v; want the original key reused, not a duplicate", doc.Permissions)
+	}
+	if _, ok := doc.Permissions["Bash"]; !ok {
+		t.Errorf(`permissions keys = %v; want "Bash" kept`, doc.Permissions)
+	}
+	if !strings.Contains(string(data), "head *") {
+		t.Errorf("settings = %s; want the new glob persisted", data)
+	}
 }
