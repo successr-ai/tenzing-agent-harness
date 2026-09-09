@@ -225,6 +225,7 @@ models:                                # custom model registry (replaces models.
       max_tokens: 32768                # optional, default 32k
       base_url: ""                     # optional, applies to the whole provider
       vision: false
+      reasoning_effort: ""             # optional; provider reasoning tier, e.g. low|medium|high (+ max on Ollama)
       cost: {input: 1.0, output: 3.0}  # USD/MTok; cache_read/cache_write default 0.1x/1.25x input
 ```
 
@@ -294,6 +295,7 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `max_tokens` | int | `32768` | Max output tokens per response. |
 | `base_url` | URL | provider default | Endpoint override; applies to the whole provider. Ignored in inline refs. |
 | `vision` | bool | `false` | Marks the model as accepting image input; image-bearing queries are rejected without it. |
+| `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: ollama/glm-5.3`). |
 | `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1× input), `cache_write` (default 1.25× input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |
 
 Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`.

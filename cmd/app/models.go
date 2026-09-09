@@ -142,6 +142,7 @@ func defFromEntry(e config.ModelEntry) (common.ModelDefinition, error) {
 		ContextWindowSize: e.ContextWindow,
 		MaxTokens:         e.MaxTokens,
 		SupportsVision:    e.Vision,
+		ReasoningEffort:   e.ReasoningEffort,
 	}
 	if def.ContextWindowSize == 0 {
 		def.ContextWindowSize = defaultCustomContextWindow

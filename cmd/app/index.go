@@ -43,6 +43,9 @@ const indexHTML = `<!DOCTYPE html>
   .msg.assistant { color: var(--fg); }
   .msg.thinking { color: var(--fg-dim); font-style: italic; font-size: 0.75rem; }
   .msg.thinking::before { content: '✻ '; }
+  /* 3 rows at the inherited line-height of 1.5. overflow is hidden and the
+     box is scrolled to the bottom on each delta, so the newest rows show. */
+  .msg.thinking .preview { max-height: 4.5em; overflow: hidden; padding-left: 1rem; }
   .msg.tool { color: var(--yellow); font-size: 0.75rem; opacity: 0.8; }
   .msg.tool.sub { padding-left: 1rem; opacity: 0.65; }
   .msg.tool.result { color: var(--fg-dim); padding-left: 1rem; }
@@ -256,12 +259,21 @@ const statusEl = document.getElementById('status');
 let running = false;
 let streamEl = null;
 let thinkEl = null;
+let thinkStart = 0;    // ms epoch the current thinking block began
+let thinkTimer = null; // live counter interval; non-null only while ticking
+let thinkHeadEl = null;    // the 'Thinking for …' line
+let thinkPreviewEl = null; // rolling window onto the reasoning text
+let thinkText = '';        // tail of the reasoning text, capped
+
+// Enough to fill three wrapped rows at any width, so the window stays full
+// while the retained string stays bounded over a long thinking block.
+const THINK_PREVIEW_CHARS = 2000;
 let inputTokens = 0;
 let outputTokens = 0;
 let costUSD = null;
 let contextUsed = 0;   // tokens in the main agent's last request
 let contextWindow = 0; // 0 = unknown, gauge hidden
-let statusNote = '';   // transient left-hand note (thinking…, tool phase)
+let statusNote = '';   // transient left-hand note (tool phase)
 let cwd = '';          // for shortening tool-call paths
 let home = '';
 let visionOK = false;
@@ -410,8 +422,27 @@ function setRunning(v) {
 function finalizeStream() {
   if (streamEl) { streamEl.classList.remove('streaming'); renderInto(streamEl); streamEl = null; }
 }
+// finalizeThinking closes the current thinking block: the live counter stops
+// and settles into its final duration. Called whenever thinking gives way to
+// something else — text, a tool call, the answer, or the turn ending — so each
+// block is timed on its own rather than one running total per turn.
 function finalizeThinking() {
-  if (thinkEl) { thinkEl = null; }
+  if (!thinkEl) return;
+  if (thinkTimer !== null) {
+    clearInterval(thinkTimer);
+    thinkTimer = null;
+    // Assigning textContent replaces the head and preview children, so the
+    // reasoning text goes with them — the duration is all that remains.
+    thinkEl.textContent = 'Thought for ' + fmtDuration(Date.now() - thinkStart);
+  }
+  thinkEl = thinkHeadEl = thinkPreviewEl = null;
+  thinkText = '';
+}
+
+// tickThinking repaints the live counter. 100ms keeps the sub-second readout
+// (fmtDuration reports ms below 1s) from looking frozen.
+function tickThinking() {
+  if (thinkHeadEl) thinkHeadEl.textContent = 'Thinking for ' + fmtDuration(Date.now() - thinkStart) + '…';
 }
 
 // SSE
@@ -428,10 +459,30 @@ es.addEventListener('text_delta', e => {
 
 es.addEventListener('thinking_delta', e => {
   if (!thinkEl) {
-    thinkEl = addMsg('thinking', DEBUG ? '' : 'Thinking…');
+    thinkEl = addMsg('thinking', '');
+    if (!DEBUG) {
+      // Two children: the timer line, and a fixed-height window beneath it.
+      thinkHeadEl = document.createElement('span');
+      thinkPreviewEl = document.createElement('div');
+      thinkPreviewEl.className = 'preview';
+      thinkEl.append(thinkHeadEl, thinkPreviewEl);
+      thinkText = '';
+      thinkStart = Date.now();
+      thinkTimer = setInterval(tickThinking, 100);
+      tickThinking();
+    }
   }
-  if (!DEBUG) return;
-  thinkEl.textContent += e.data;
+  if (DEBUG) {
+    // Debug shows the complete reasoning, permanently: no timer, no window.
+    thinkEl.textContent += e.data;
+    chat.scrollTop = chat.scrollHeight;
+    return;
+  }
+  thinkText = (thinkText + e.data).slice(-THINK_PREVIEW_CHARS);
+  thinkPreviewEl.textContent = thinkText;
+  // The browser does the wrapping; scrolling to the bottom of a clipped box
+  // is what makes the window show the LAST three rows rather than the first.
+  thinkPreviewEl.scrollTop = thinkPreviewEl.scrollHeight;
   chat.scrollTop = chat.scrollHeight;
 });
 
@@ -444,6 +495,7 @@ function agentTag(d) {
 // .agent.
 es.addEventListener('tool_execution.started', e => {
   finalizeStream();
+  finalizeThinking();
   const d = JSON.parse(e.data);
   const cls = 'tool' + (d.agent ? ' sub' : '');
   // Same rendering either way; debug just gets a longer leash on the
@@ -753,10 +805,14 @@ es.addEventListener('error', e => {
 es.addEventListener('status', e => {
   const d = JSON.parse(e.data);
   if (d.state === 'running') {
-    statusNote = 'thinking…';
+    // No note while running: the old 'thinking…' text was set once here and
+    // survived every tool call and the streamed answer. Per-block timing now
+    // lives on the ✻ line; this only clears a leftover tool phase.
+    statusNote = '';
     renderStatus();
   } else {
     statusNote = '';
+    finalizeThinking(); // backstop: no path ends a turn with the timer running
     renderStatus();
     setRunning(false);
   }

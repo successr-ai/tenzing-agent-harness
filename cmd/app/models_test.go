@@ -72,6 +72,18 @@ func TestBuildRegistry(t *testing.T) {
 			},
 		},
 		{
+			name: "reasoning effort carried onto the definition",
+			section: config.ModelsSection{Entries: []config.ModelEntry{
+				{Provider: "ollama", Name: "thinker", ReasoningEffort: "max"},
+			}},
+			check: func(t *testing.T, reg *modelRegistry) {
+				def, _ := reg.resolve("ollama/thinker")
+				if def.ReasoningEffort != "max" {
+					t.Errorf("reasoning effort = %q, want max", def.ReasoningEffort)
+				}
+			},
+		},
+		{
 			name: "default referencing custom entry",
 			section: config.ModelsSection{
 				Default: "ollama/my-custom",

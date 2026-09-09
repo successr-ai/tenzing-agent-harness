@@ -30,6 +30,9 @@ type Client struct {
 	client      *http.Client
 	model       Model
 	contextSize int64
+	// reasoningEffort, when non-empty, replaces the request's boolean think
+	// flag with one of Ollama's level strings.
+	reasoningEffort string
 	// retryBackoff, when non-nil, retries requests that fail with HTTP 429
 	// using exponential backoff. NewClient always sets it; nil (tests only)
 	// disables 429 retries.
@@ -56,6 +59,9 @@ type clientOptions struct {
 	baseURL   string
 	// Ollama num_ctx: total context window (input+output). 0 uses model default.
 	contextSize int64
+	// reasoningEffort is an Ollama think level ("low", "medium", "high",
+	// "max"); empty leaves the boolean think flag alone.
+	reasoningEffort string
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
@@ -102,6 +108,16 @@ func WithRateLimit(rate float64, burstSize int64) ClientOption {
 	}
 }
 
+// WithReasoningEffort sends the given think level ("low", "medium", "high",
+// "max") instead of a bare think:true. The value is sent verbatim — Ollama
+// validates it and rejects unknown levels with HTTP 400. A request that
+// explicitly disables thinking still wins.
+func WithReasoningEffort(effort string) ClientOption {
+	return func(o *clientOptions) {
+		o.reasoningEffort = effort
+	}
+}
+
 func WithContextSize(size int64) ClientOption {
 	return func(o *clientOptions) {
 		o.contextSize = size
@@ -144,6 +160,8 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 		model:        opts.model,
 		contextSize:  opts.contextSize,
 		retryBackoff: opts.retryBackoff,
+
+		reasoningEffort: opts.reasoningEffort,
 	}
 	var llm common.LLM = raw
 	isRateDefined := opts.rateLimit.Rate > 0
@@ -179,9 +197,11 @@ type ollamaChatRequest struct {
 	Model    string              `json:"model"`
 	Messages []ollamaChatMessage `json:"messages"`
 	Stream   bool                `json:"stream"`
-	Think    *bool               `json:"think,omitempty"`
-	Tools    []ollamaTool        `json:"tools,omitempty"`
-	Options  map[string]any      `json:"options,omitempty"`
+	// Think is a bool or, when a reasoning effort is configured, one of
+	// Ollama's level strings. nil omits the field entirely.
+	Think   any            `json:"think,omitempty"`
+	Tools   []ollamaTool   `json:"tools,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -250,7 +270,7 @@ func (o *Client) SendSyncMessage(ctx context.Context, req common.CompletionReque
 		Model:    string(req.Model),
 		Messages: toOllamaMessages(req),
 		Stream:   false,
-		Think:    req.Think,
+		Think:    o.think(req),
 		Tools:    tools,
 		Options:  o.ollamaOptions(req),
 	}
@@ -280,7 +300,7 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		Model:    string(req.Model),
 		Messages: toOllamaMessages(req),
 		Stream:   true,
-		Think:    req.Think,
+		Think:    o.think(req),
 		Tools:    tools,
 		Options:  o.ollamaOptions(req),
 	}
@@ -404,7 +424,7 @@ func (o *Client) SendMessageWithTools(ctx context.Context, req common.Completion
 		Model:    string(req.Model),
 		Messages: toOllamaMessages(req),
 		Stream:   false,
-		Think:    req.Think,
+		Think:    o.think(req),
 		Tools:    ollamaTools,
 		Options:  o.ollamaOptions(req),
 	}
@@ -525,6 +545,23 @@ func readErrorBody(r io.Reader) string {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// think resolves the request's think field. A configured reasoning effort
+// replaces the boolean with Ollama's level string, except when the request
+// explicitly disables thinking — an explicit off beats a configured level.
+// nil (no preference, no effort) omits the field.
+func (o *Client) think(req common.CompletionRequest) any {
+	if req.Think != nil && !*req.Think {
+		return false
+	}
+	if o.reasoningEffort != "" {
+		return o.reasoningEffort
+	}
+	if req.Think == nil {
+		return nil
+	}
+	return *req.Think
+}
 
 func (o *Client) ollamaOptions(req common.CompletionRequest) map[string]any {
 	opts := map[string]any{}

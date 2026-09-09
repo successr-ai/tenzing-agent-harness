@@ -354,7 +354,7 @@ func TestHarnessAdvisorGate_SingleShotForcedToolIncident(t *testing.T) {
 	t.Run("ungated advisor exhausts the unwidened budget", func(t *testing.T) {
 		agent := newScriptedAgent(
 			toolStep("propose_grid", jsonInput(map[string]any{"rows": 3})), // iter 1: denied, no orientation phase to precede it
-			toolStep("advisor", `{}`),                                     // iter 2: forced to consult before it can even retry
+			toolStep("advisor", `{}`),                                      // iter 2: forced to consult before it can even retry
 			// iter 3 (retry propose_grid) never runs: budget exhausts first.
 		)
 		advisorLLM := &recordingLLM{}
@@ -387,7 +387,7 @@ func TestHarnessAdvisorGate_SingleShotForcedToolIncident(t *testing.T) {
 	t.Run("exempt tool fits the same unwidened budget", func(t *testing.T) {
 		agent := newScriptedAgent(
 			toolStep("propose_grid", jsonInput(map[string]any{"rows": 3})), // iter 1: exempt, runs immediately
-			finalStep("grid proposed"),                                    // iter 2: same shape as before advisor was ever wired in
+			finalStep("grid proposed"),                                     // iter 2: same shape as before advisor was ever wired in
 		)
 		advisorLLM := &recordingLLM{}
 

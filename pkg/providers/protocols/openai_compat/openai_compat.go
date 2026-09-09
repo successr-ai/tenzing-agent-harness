@@ -27,6 +27,7 @@ type clientOptions struct {
 	baseURL                string
 	retryBackoff           *ratelimit.RetryBackoff
 	useMaxCompletionTokens bool
+	reasoningEffort        string
 	extraFields            []extraField
 	// rateLimit configures the client-side limiter: Rate+BurstSize enable the
 	// token bucket, MaxConcurrency bounds in-flight requests. All zero means
@@ -116,6 +117,15 @@ func WithExtraField(path string, value any) ClientOption {
 	}
 }
 
+// WithReasoningEffort sets reasoning_effort on every request, overriding
+// the tier a request's ThinkingBudget would otherwise imply. The value is
+// sent verbatim — the provider owns the valid set.
+func WithReasoningEffort(effort string) ClientOption {
+	return func(o *clientOptions) {
+		o.reasoningEffort = effort
+	}
+}
+
 // WithMaxCompletionTokens sends max_completion_tokens instead of the
 // deprecated max_tokens, required by newer OpenAI models.
 func WithMaxCompletionTokens() ClientOption {
@@ -138,6 +148,9 @@ type Client struct {
 	// UseMaxCompletionTokens sends max_completion_tokens instead of the
 	// deprecated max_tokens, required by newer OpenAI models.
 	UseMaxCompletionTokens bool
+	// ReasoningEffort, when non-empty, sets reasoning_effort on every
+	// request in place of the ThinkingBudget-derived tier.
+	ReasoningEffort string
 }
 
 // NewClient builds an OpenAI-compatible client. Model is required; there is
@@ -166,6 +179,7 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 		Model:                  opts.model,
 		RetryBackoff:           opts.retryBackoff,
 		UseMaxCompletionTokens: opts.useMaxCompletionTokens,
+		ReasoningEffort:        opts.reasoningEffort,
 	}
 	var llm common.LLM = raw
 	isRateDefined := opts.rateLimit.Rate > 0
@@ -414,7 +428,10 @@ func (c *Client) buildParams(req common.CompletionRequest) (openai.ChatCompletio
 		params.Temperature = param.NewOpt(*req.Temperature)
 	}
 
-	if req.ThinkingBudget != nil {
+	switch {
+	case c.ReasoningEffort != "":
+		params.ReasoningEffort = openai.ReasoningEffort(c.ReasoningEffort)
+	case req.ThinkingBudget != nil:
 		params.ReasoningEffort = reasoningEffortForBudget(*req.ThinkingBudget)
 	}
 

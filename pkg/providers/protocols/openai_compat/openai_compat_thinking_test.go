@@ -64,3 +64,47 @@ func TestOpenAICompat_ThinkingBudgetMapsToReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAICompat_ReasoningEffortOverridesBudget(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		budget     *int64
+		wantEffort string
+	}{
+		{"configured effort with no budget", "low", nil, "low"},
+		{"configured effort beats the budget tier", "max", int64Ptr(100000), "max"},
+		{"empty effort falls back to the budget tier", "", int64Ptr(1024), "low"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestBody []byte
+			compat := newCompatTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				requestBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(compatCompletionJSON))
+			})
+			compat.ReasoningEffort = tt.effort
+
+			_, err := compat.SendSyncMessage(context.Background(), common.CompletionRequest{
+				Model:          "test-model",
+				Messages:       []common.Message{common.NewUserMessage("hi")},
+				ThinkingBudget: tt.budget,
+			})
+			if err != nil {
+				t.Fatalf("SendSyncMessage: %v", err)
+			}
+
+			var wire struct {
+				ReasoningEffort string `json:"reasoning_effort"`
+			}
+			if err := json.Unmarshal(requestBody, &wire); err != nil {
+				t.Fatalf("unmarshal request body: %v", err)
+			}
+			if wire.ReasoningEffort != tt.wantEffort {
+				t.Errorf("reasoning_effort = %q, want %q", wire.ReasoningEffort, tt.wantEffort)
+			}
+		})
+	}
+}

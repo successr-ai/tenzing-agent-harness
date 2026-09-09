@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -51,16 +52,26 @@ func buildLLM(def common.ModelDefinition, baseURL string, apiKey string) (common
 			openai_compat.WithAPIKey(key),
 			openai_compat.WithBaseURL(url),
 		}, extra...)
+		if def.ReasoningEffort != "" {
+			opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
+		}
 		return openai_compat.NewClient(def, opts...)
 	}
 
 	switch def.Provider {
 	case "anthropic":
+		if def.ReasoningEffort != "" {
+			slog.Warn("reasoning_effort ignored: provider takes a numeric thinking budget, not tiers",
+				"model", def.Name, "provider", def.Provider, "reasoning_effort", def.ReasoningEffort)
+		}
 		return protoanthropic.NewClient(def, protoanthropic.WithAPIKey(key))
 	case "ollama":
 		opts := []protoollama.ClientOption{protoollama.WithAPIKey(key)}
 		if baseURL != "" {
 			opts = append(opts, protoollama.WithBaseURL(baseURL))
+		}
+		if def.ReasoningEffort != "" {
+			opts = append(opts, protoollama.WithReasoningEffort(def.ReasoningEffort))
 		}
 		return protoollama.NewClient(def, opts...)
 	case "openai":
@@ -80,8 +91,9 @@ func buildLLM(def common.ModelDefinition, baseURL string, apiKey string) (common
 }
 
 // llmCache builds LLM clients on demand via buildLLM and reuses one client
-// per distinct provider/model/baseURL, so model switch-back is free and
-// roles sharing a model share a client. Base URLs come from the process-wide
+// per distinct provider/model/baseURL/reasoning-effort, so model switch-back
+// is free and roles sharing a model share a client (effort is in the key
+// because inline model refs can name the same model at different tiers). Base URLs come from the process-wide
 // model registry (models.yaml base_url entries).
 type llmCache struct {
 	mu      sync.Mutex
@@ -103,7 +115,7 @@ func (c *llmCache) get(def common.ModelDefinition) (common.LLM, error) {
 	if url == "" {
 		url = models.baseURLs[def.Provider]
 	}
-	cacheKey := fmt.Sprintf("%s|%s|%s", def.Provider, def.Name, url)
+	cacheKey := fmt.Sprintf("%s|%s|%s|%s", def.Provider, def.Name, url, def.ReasoningEffort)
 	if llm, ok := c.clients[cacheKey]; ok {
 		return llm, nil
 	}

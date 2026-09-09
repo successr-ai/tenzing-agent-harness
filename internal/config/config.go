@@ -103,6 +103,11 @@ type ModelEntry struct {
 	// Vision marks the model as accepting image input; image-bearing
 	// queries are rejected on models without it.
 	Vision bool `yaml:"vision"`
+	// ReasoningEffort sets the provider's reasoning tier for this model,
+	// sent verbatim ("low"/"medium"/"high", plus "max" on Ollama). The
+	// provider validates it; a bad value fails the first request, not
+	// startup. Ignored by providers with no tier concept (Anthropic).
+	ReasoningEffort string `yaml:"reasoning_effort"`
 }
 
 // CostEntry is USD per million tokens. CacheRead/CacheWrite default to the

@@ -84,6 +84,12 @@ type ModelDefinition struct {
 	// SupportsVision reports whether the model accepts image content blocks.
 	// Advisory metadata for callers — providers do not gate on it.
 	SupportsVision bool
+	// ReasoningEffort names the provider's reasoning tier for this model
+	// ("low", "high", Ollama's "max", ...). Passed through verbatim: the
+	// valid set is the provider's, and it validates. Empty leaves the
+	// provider's own default in place; providers with no tier concept
+	// (Anthropic, which takes a numeric budget) ignore it.
+	ReasoningEffort string
 }
 
 func (m ModelDefinition) GetName() string {

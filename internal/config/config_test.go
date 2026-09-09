@@ -52,6 +52,7 @@ models:
       context_window: 200000
       max_tokens: 16384
       vision: true
+      reasoning_effort: high
       cost: {input: 1.5, output: 6}
 `)
 	f, found, err := Load(path, true)
@@ -96,7 +97,7 @@ models:
 		t.Fatalf("models section wrong: %+v", f.Models)
 	}
 	e := f.Models.Entries[0]
-	if e.Provider != "openrouter" || e.Name != "custom" || e.ContextWindow != 200000 || e.MaxTokens != 16384 || !e.Vision {
+	if e.Provider != "openrouter" || e.Name != "custom" || e.ContextWindow != 200000 || e.MaxTokens != 16384 || !e.Vision || e.ReasoningEffort != "high" {
 		t.Errorf("model entry wrong: %+v", e)
 	}
 	if e.Cost == nil || e.Cost.Input != 1.5 || e.Cost.Output != 6 {
