@@ -548,7 +548,9 @@ es.addEventListener('approval.requested', e => {
   deny.className = 'deny';
   // "allow always" is bash-only: it writes the glob to the settings file's
   // bash allow list and applies it to this session, so matching commands
-  // stop prompting. Prefilled with the command's first word + ' *'.
+  // stop prompting. Prefilled locally with the command's first word + ' *',
+  // then refined by /suggest, which knows the live allow list and proposes a
+  // rule for the first expression it does not already cover.
   const isBash = d.data.tool_name === 'bash';
   let always, pattern;
   if (isBash) {
@@ -557,6 +559,18 @@ es.addEventListener('approval.requested', e => {
     pattern.value = suggestGlob(d.data.input);
     always = document.createElement('button');
     always.textContent = 'allow always';
+    fetch('/suggest', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({call_id: d.data.call_id}),
+    }).then(r => r.ok ? r.json() : null).then(sg => {
+      if (!sg || pattern.disabled) return; // answered already
+      if (sg.glob) { pattern.value = sg.glob; return; }
+      // Nothing worth allowlisting (a file write, or already covered): say
+      // so rather than offering a glob that would grant more than it looks.
+      pattern.value = '';
+      pattern.placeholder = sg.reason || 'no glob suggested';
+    }).catch(() => { /* advisory: the local suggestion stands */ });
   }
   // Edit/Write: fetch the diff the call would produce, so the decision is
   // made against the change rather than the raw arguments.
@@ -610,8 +624,9 @@ es.addEventListener('approval.requested', e => {
   chat.scrollTop = chat.scrollHeight;
 });
 
-// suggestGlob proposes an allow pattern for a bash call: the command's first
-// word plus ' *'. Only a suggestion — the field is editable, and a chained
+// suggestGlob is the local fallback prefill for a bash call: the command's
+// first word plus ' *'. /suggest replaces it with an expression-aware rule
+// when it answers. Only a suggestion — the field is editable, and a chained
 // command needs every expression covered before it stops prompting.
 function suggestGlob(input) {
   let cmd = '';

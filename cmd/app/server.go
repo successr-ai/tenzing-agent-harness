@@ -150,6 +150,14 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 		},
 		Handler: s.handlePreview,
 	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[suggestInput, suggestOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "suggest",
+			Method:      http.MethodPost,
+			Path:        "/suggest",
+		},
+		Handler: s.handleSuggest,
+	})
 	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[approveInput, statusOutput, router.MapAuthInfo]{
 		Operation: huma.Operation{
 			OperationID: "approve",
@@ -939,6 +947,49 @@ func (s *agentServer) handlePreview(_ context.Context, _ router.MapAuthInfo, in 
 		out.Body.Error = err.Error()
 	default:
 		out.Body.Diff, out.Body.Added, out.Body.Removed, out.Body.Omitted = d.Text, d.Added, d.Removed, d.Omitted
+	}
+	return out, nil
+}
+
+type suggestInput struct {
+	Body struct {
+		CallID string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
+	}
+}
+
+type suggestOutput struct {
+	Body struct {
+		Glob   string `json:"glob,omitempty" doc:"Allow glob proposed for the pending bash call"`
+		Reason string `json:"reason,omitempty" doc:"Why no glob is proposed"`
+	}
+}
+
+// handleSuggest proposes the "allow always" glob for a pending bash
+// approval: a rule for the first expression the live allow list does not
+// already cover, so a chained command converges one rule per approval.
+// Read-only and advisory — the request stays pending, the glob is editable,
+// and a call with nothing to propose reports why in `reason`.
+func (s *agentServer) handleSuggest(_ context.Context, _ router.MapAuthInfo, in *suggestInput) (*suggestOutput, error) {
+	s.approvalsMu.Lock()
+	pending, ok := s.approvals[in.Body.CallID]
+	s.approvalsMu.Unlock()
+	if !ok {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no pending approval for call_id")
+	}
+
+	out := &suggestOutput{}
+	switch {
+	case pending.tool != "bash":
+		out.Body.Reason = "no glob for " + pending.tool
+	case s.bashAllow == nil:
+		out.Body.Reason = "no settings file configured for allow"
+	default:
+		var args struct {
+			Command string `json:"command"`
+		}
+		// Unparseable input yields an empty command, which suggests nothing.
+		_ = json.Unmarshal([]byte(pending.input), &args)
+		out.Body.Glob, out.Body.Reason = s.bashAllow.rules.Suggest(args.Command)
 	}
 	return out, nil
 }
