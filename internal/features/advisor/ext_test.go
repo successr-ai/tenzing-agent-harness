@@ -239,4 +239,86 @@ func TestGateExt_PromptFragment(t *testing.T) {
 	if !strings.Contains(frag, "state-changing") {
 		t.Errorf("prompt fragment does not state the hard rule: %q", frag)
 	}
+	if !strings.Contains(frag, "TodoUpdate") {
+		t.Errorf("prompt fragment does not state the plan-checkpoint rule: %q", frag)
+	}
+}
+
+func callInput(t *testing.T, g *GateExt, tool, input string) *core.ToolCallContext {
+	t.Helper()
+	tcc := &core.ToolCallContext{Call: &core.ToolCall{Name: tool, Input: input}}
+	if err := g.OnToolCall(context.Background(), tcc); err != nil {
+		t.Fatalf("OnToolCall(%s): %v", tool, err)
+	}
+	return tcc
+}
+
+func TestGateExt_PlanCheckpoints(t *testing.T) {
+	type step struct{ tool, input string }
+	done := `{"id":"a1","status":"done"}`
+	inProgress := `{"id":"a1","status":"in_progress"}`
+	tests := []struct {
+		name     string
+		sequence []step // last one is asserted
+		want     core.Decision
+	}{
+		{"TodoWrite right after consult", []step{{"advisor", ""}, {"TodoWrite", ""}}, core.Allow},
+		{"TodoWrite after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoWrite", ""}}, core.Deny},
+		{"TodoCreate after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoCreate", ""}}, core.Deny},
+		{"TodoUpdate done after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoUpdate", done}}, core.Deny},
+		{"TodoUpdate in_progress after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoUpdate", inProgress}}, core.Allow},
+		{"TodoUpdate garbage input after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoUpdate", "{"}}, core.Allow},
+		{"re-consult clears the debt", []step{{"advisor", ""}, {"write", ""}, {"advisor", ""}, {"TodoUpdate", done}}, core.Allow},
+		{"todo tools do not count as writes", []step{{"advisor", ""}, {"TodoWrite", ""}, {"TodoUpdate", inProgress}, {"TodoUpdate", done}}, core.Allow},
+		{"TodoRead after a write", []step{{"advisor", ""}, {"write", ""}, {"TodoRead", ""}}, core.Allow},
+		{"plain write after a write", []step{{"advisor", ""}, {"write", ""}, {"edit", ""}}, core.Allow},
+		{"TodoWrite before any consult", []step{{"TodoWrite", ""}}, core.Deny},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := testGate(0)
+			startTurn(t, g, 1)
+			var last *core.ToolCallContext
+			for _, s := range tt.sequence {
+				last = callInput(t, g, s.tool, s.input)
+			}
+			if last.Decision != tt.want {
+				t.Errorf("Decision = %v, want %v (reason %q)", last.Decision, tt.want, last.Reason)
+			}
+			if tt.want == core.Deny && !strings.Contains(last.Reason, "advisor") {
+				t.Errorf("Reason = %q, want advisor mention", last.Reason)
+			}
+		})
+	}
+}
+
+// A capped advisor call still clears checkpoint debt: the plan tools must
+// not deadlock behind a consult the cap makes impossible.
+func TestGateExt_CapClearsCheckpointDebt(t *testing.T) {
+	g := testGate(0)
+	startTurn(t, g, 1)
+	for range maxAdvisorCallsPerTurn {
+		call(t, g, "advisor")
+	}
+	call(t, g, "write")
+	if tcc := callInput(t, g, "TodoUpdate", `{"status":"done"}`); tcc.Decision != core.Deny {
+		t.Fatalf("checkpoint with debt = %v, want Deny", tcc.Decision)
+	}
+	call(t, g, "advisor") // capped, but still clears debt
+	if tcc := callInput(t, g, "TodoUpdate", `{"status":"done"}`); tcc.Decision != core.Allow {
+		t.Errorf("checkpoint after capped consult = %v, want Allow (%q)", tcc.Decision, tcc.Reason)
+	}
+}
+
+func TestGateExt_ResetsCheckpointDebtPerTurn(t *testing.T) {
+	g := testGate(0)
+	startTurn(t, g, 1)
+	call(t, g, "advisor")
+	call(t, g, "write")
+	startTurn(t, g, 1) // new turn
+	call(t, g, "advisor")
+	if tcc := call(t, g, "TodoWrite"); tcc.Decision != core.Allow {
+		t.Errorf("TodoWrite after consult on fresh turn = %v, want Allow (%q)", tcc.Decision, tcc.Reason)
+	}
 }

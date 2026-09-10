@@ -7,7 +7,9 @@
 //
 // The package also provides GateExt (ext.go), a write-gate extension that
 // denies the first state-changing tool call of a turn until the advisor has
-// been consulted. Both activate together via harness.WithAdvisorLLM.
+// been consulted, and denies plan checkpoints (TodoWrite, TodoCreate,
+// TodoUpdate to done) unless the advisor was consulted since the last
+// state-changing call. Both activate together via harness.WithAdvisorLLM.
 package advisor
 
 import (
@@ -40,6 +42,9 @@ const systemPrompt = "You are a senior technical advisor. You see the executor a
 	"conversation transcript: the task, every tool call and result, and its reasoning so far. " +
 	"Identify risks, wrong assumptions, missing steps, and simpler alternatives. " +
 	"If the approach is sound, say so briefly rather than inventing objections. " +
+	"The executor is required to consult you before its first state-changing action, " +
+	"before writing or changing its plan, and before marking a task done. If an earlier " +
+	"check is warranted, end with the milestone to re-consult at. " +
 	"Keep your guidance under roughly 80 words unless a critical risk demands more."
 
 // HistoryFunc returns the executor conversation to show the advisor.

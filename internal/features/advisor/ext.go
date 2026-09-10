@@ -2,6 +2,8 @@ package advisor
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -9,20 +11,24 @@ import (
 )
 
 // maxAdvisorCallsPerTurn bounds consults per turn so a looping executor
-// cannot burn advisor tokens indefinitely.
-const maxAdvisorCallsPerTurn = 5
+// cannot burn advisor tokens indefinitely. Sized for the plan-checkpoint
+// rule: one consult per plan write plus one per task marked done.
+const maxAdvisorCallsPerTurn = 20
 
 const gatePromptFragment = "## Advisor\n\n" +
 	"Call `advisor` before substantive work — before writing, editing, or committing " +
 	"to an approach. Orientation first (finding files, reading what's there) is fine " +
 	"and encouraged; then consult. Also call it when stuck (recurring errors, an " +
 	"approach that isn't converging) and once before declaring a non-trivial task " +
-	"done. Call `advisor` before TodoWrite so its plan funnels into your todo list. " +
-	"Give the advice serious weight; if your evidence contradicts it, surface the " +
-	"conflict in one more advisor call rather than silently switching.\n\n" +
-	"Hard rule (enforced): your first state-changing tool call each turn must be " +
-	"preceded by an advisor call. Read-only orientation is always allowed first. " +
-	"This applies to one-line edits too."
+	"done. Give the advice serious weight; if your evidence contradicts it, surface the " +
+	"conflict in one more advisor call rather than silently switching. The advisor may " +
+	"name a milestone to check back at; honor it.\n\n" +
+	"Hard rules (enforced):\n" +
+	"- Your first state-changing tool call each turn must be preceded by an advisor call. " +
+	"Read-only orientation is always allowed first. This applies to one-line edits too.\n" +
+	"- Plan checkpoints: `TodoWrite`, `TodoCreate`, and `TodoUpdate` with status `done` " +
+	"require a fresh advisor call — one with no state-changing tool calls since. " +
+	"Consult, then write or change the plan; finish a task, consult, then mark it done."
 
 const nudgeReminder = "You have not consulted the advisor yet. If the task has a " +
 	"non-obvious design decision or a failure mode you haven't ruled out, call " +
@@ -35,12 +41,17 @@ var (
 	_ core.PromptContributor   = (*GateExt)(nil)
 )
 
-// GateExt enforces the advisor "hard rule" on the main loop: per turn, the
+// GateExt enforces the advisor "hard rules" on the main loop. Per turn, the
 // first state-changing tool call is denied until the advisor has been called.
-// Read-only tools flow freely; unknown tools (no read-only marker, e.g. MCP)
-// count as state-changing. Tools named via WithAdvisorExemptTools also flow
-// freely, unconsulted — for harnesses whose first (and only) tool call is a
-// forced/schema-only answer with no orientation phase to hide behind.
+// Plan checkpoints (TodoWrite, TodoCreate, TodoUpdate to done) are denied
+// unless the advisor has been called since the last state-changing tool call,
+// so the advisor reviews at every plan change and task boundary. Todo tools
+// themselves never count as state-changing for that rule, so status flips
+// between checkpoints flow freely. Read-only tools flow freely; unknown tools
+// (no read-only marker, e.g. MCP) count as state-changing. Tools named via
+// WithAdvisorExemptTools also flow freely, unconsulted — for harnesses whose
+// first (and only) tool call is a forced/schema-only answer with no
+// orientation phase to hide behind.
 // classify is late-bound like readOnlyExt's: the composite ToolPort is built
 // after the extension set, so harness.New assigns it via SetClassifier before
 // any turn runs.
@@ -52,10 +63,11 @@ type GateExt struct {
 	nudgeIteration int
 	exempt         map[string]bool
 
-	mu        sync.Mutex
-	classify  func(name string) bool // true = read-only
-	consulted bool
-	calls     int
+	mu                 sync.Mutex
+	classify           func(name string) bool // true = read-only
+	consulted          bool
+	calls              int
+	writesSinceConsult int
 }
 
 // NewGateExt builds the write-gate. nudgeIteration <= 0 disables the nudge.
@@ -92,6 +104,7 @@ func (e *GateExt) BeforeIteration(_ context.Context, tc *core.TurnContext) error
 	if tc.Iteration <= 1 {
 		e.consulted = false
 		e.calls = 0
+		e.writesSinceConsult = 0
 	}
 	if e.nudgeIteration > 0 && tc.Iteration >= e.nudgeIteration && !e.consulted {
 		tc.Reminders = append(tc.Reminders, nudgeReminder)
@@ -106,12 +119,15 @@ func (e *GateExt) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error
 	name := strings.ToLower(tcc.Call.Name)
 	switch {
 	case name == "advisor":
+		// A capped turn still counts as consulted and clears the checkpoint
+		// debt, so the plan tools cannot deadlock behind an unreachable consult.
+		e.consulted = true
+		e.writesSinceConsult = 0
 		if e.calls >= maxAdvisorCallsPerTurn {
 			deny(tcc, "advisor call cap reached for this turn; proceed with the guidance you have")
 			return nil
 		}
 		e.calls++
-		e.consulted = true
 	case e.classify != nil && e.classify(name):
 		// read-only orientation: always allowed
 	case e.exempt[name]:
@@ -120,8 +136,36 @@ func (e *GateExt) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error
 		deny(tcc, "Call `advisor` before your first state-changing action this turn. "+
 			"Read-only orientation (reads, searches, listings) is allowed first. "+
 			"This applies to one-line edits too.")
+	case strings.HasPrefix(name, "todo"):
+		// plan tools never count as writes; checkpoints need a fresh consult
+		if isPlanCheckpoint(name, tcc.Call.Input) && e.writesSinceConsult > 0 {
+			deny(tcc, fmt.Sprintf("Plan checkpoint: %d state-changing call(s) since your last "+
+				"advisor consult. Call `advisor` before changing the plan or marking a task done.",
+				e.writesSinceConsult))
+		}
+	default:
+		e.writesSinceConsult++
 	}
 	return nil
+}
+
+// isPlanCheckpoint reports whether a todo tool call changes the plan's shape
+// or closes a task: TodoWrite, TodoCreate, or TodoUpdate with status done.
+// Unparseable TodoUpdate input is not a checkpoint; the tool rejects it anyway.
+func isPlanCheckpoint(lowerName, input string) bool {
+	switch lowerName {
+	case "todowrite", "todocreate":
+		return true
+	case "todoupdate":
+		var in struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(input), &in); err != nil {
+			return false
+		}
+		return strings.EqualFold(in.Status, "done")
+	}
+	return false
 }
 
 func deny(tcc *core.ToolCallContext, reason string) {
