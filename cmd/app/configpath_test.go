@@ -4,6 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/modelregistry"
+	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
+	"go.yaml.in/yaml/v3"
 )
 
 // resolveConfigPath's fallback chain: --config > TENZING_CONFIG > ./tenzing.yaml
@@ -100,4 +104,33 @@ func redirectUserConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
+}
+
+// testRegistryYAML is a minimal complete config: one provider, two models —
+// the same shape root-command tests seed the registry with.
+const testRegistryYAML = "providers:\n" +
+	"  - name: local\n    type: ollama\n    url: http://localhost:11434\n" +
+	"models:\n" +
+	"  - name: alpha\n    provider: local\n    model_name: glm-5.3\n" +
+	"  - name: beta\n    provider: local\n    model_name: qwen3\n"
+
+// testDeps builds a deps pair whose registry resolves the testRegistryYAML
+// models, failing the test on error.
+func testDeps(t *testing.T) *deps {
+	t.Helper()
+	reg, err := buildTestRegistry()
+	if err != nil {
+		t.Fatalf("build test registry: %v", err)
+	}
+	return &deps{models: reg, llms: modelregistry.NewFactory()}
+}
+
+// buildTestRegistry parses testRegistryYAML and builds a registry from it,
+// so the tests exercise the same Build path RunE does.
+func buildTestRegistry() (*modelregistry.Registry, error) {
+	var file cfgfile.File
+	if err := yaml.Unmarshal([]byte(testRegistryYAML), &file); err != nil {
+		return nil, err
+	}
+	return modelregistry.Build(file.Providers, file.Models)
 }

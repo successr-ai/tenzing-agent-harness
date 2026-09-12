@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -6,25 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
-
-	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/api/turnqueue"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 )
-
-// answerAgent completes every turn immediately with a fixed answer.
-type answerAgent struct{}
-
-func (a *answerAgent) GetCurrentModel() string               { return "ans" }
-func (a *answerAgent) UpdateStreamCallback(_ func(string))   {}
-func (a *answerAgent) UpdateThinkingCallback(_ func(string)) {}
-func (a *answerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
-	return core.ReasoningResult{
-		FinalAnswer: "the-answer",
-		Meta:        core.ResponseMeta{Model: "ans", AssistantText: "the-answer"},
-	}, nil
-}
 
 // seedSession writes a fixture session for the server's cwd into dir.
 func seedSession(t *testing.T, dir, id string, entries ...session.Entry) {
@@ -116,7 +101,7 @@ func TestSessionEndpoints(t *testing.T) {
 func TestMessagesEndpoint(t *testing.T) {
 	api := newTestServer(t, &answerAgent{})
 
-	if got := api.startTurnOrQueue(turnRequest{query: "what is the magic word?"}); got != "started" {
+	if got := submit(api, "what is the magic word?"); got != turnqueue.Started {
 		t.Fatalf("query status = %q", got)
 	}
 	// wait for the turn to finish and the persister to flush the entries

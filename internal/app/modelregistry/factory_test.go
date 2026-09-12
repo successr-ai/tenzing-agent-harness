@@ -1,4 +1,4 @@
-package main
+package modelregistry
 
 import (
 	"testing"
@@ -17,43 +17,42 @@ func TestBuildLLMUsesProviderEndpoint(t *testing.T) {
 		config.ModelEntry{Name: "there", Provider: "cloud", ModelName: "glm-5.3"},
 	)
 
-	here, _ := reg.resolve("here")
-	there, _ := reg.resolve("there")
-	for _, rm := range []resolvedModel{here, there} {
+	here, _ := reg.Resolve("here")
+	there, _ := reg.Resolve("there")
+	for _, rm := range []ResolvedModel{here, there} {
 		if _, err := buildLLM(rm); err != nil {
-			t.Fatalf("buildLLM(%s): %v", rm.provider.Name, err)
+			t.Fatalf("buildLLM(%s): %v", rm.Provider.Name, err)
 		}
 	}
 }
 
-// TestLLMCacheKeyedByProvider proves the cache does not hand a client built
-// for one provider to a model on another: same wire model name, same type,
-// different endpoint.
-func TestLLMCacheKeyedByProvider(t *testing.T) {
+// TestFactoryGetCoversEveryExportedBranchOfTheCache: miss builds, hit
+// reuses, and clients for different providers never share.
+func TestFactoryGet(t *testing.T) {
 	reg := testRegistry(t,
 		config.ModelEntry{Name: "here", Provider: "local", ModelName: "glm-5.3"},
 		config.ModelEntry{Name: "there", Provider: "cloud", ModelName: "glm-5.3"},
 	)
-	cache := &llmCache{clients: make(map[string]common.LLM)}
+	f := NewFactory()
 
-	here, _ := reg.resolve("here")
-	there, _ := reg.resolve("there")
+	here, _ := reg.Resolve("here")
+	there, _ := reg.Resolve("there")
 
-	a, err := cache.get(here)
+	a, err := f.Get(here)
 	if err != nil {
-		t.Fatalf("get(here): %v", err)
+		t.Fatalf("Get(here): %v", err)
 	}
-	b, err := cache.get(there)
+	b, err := f.Get(there)
 	if err != nil {
-		t.Fatalf("get(there): %v", err)
+		t.Fatalf("Get(there): %v", err)
 	}
 	if a == b {
 		t.Error("clients for different providers were shared")
 	}
 
-	again, err := cache.get(here)
+	again, err := f.Get(here)
 	if err != nil {
-		t.Fatalf("get(here) again: %v", err)
+		t.Fatalf("Get(here) again: %v", err)
 	}
 	if again != a {
 		t.Error("same model rebuilt instead of reusing the cached client")
@@ -63,7 +62,7 @@ func TestLLMCacheKeyedByProvider(t *testing.T) {
 // TestBuildLLMUnknownType covers the switch's default arm; config
 // validation rejects unknown types first, so this is the backstop.
 func TestBuildLLMUnknownType(t *testing.T) {
-	rm := resolvedModel{provider: config.Provider{Name: "p", Type: "llamafile", URL: "http://x"}}
+	rm := ResolvedModel{Provider: config.Provider{Name: "p", Type: "llamafile", URL: "http://x"}}
 	if _, err := buildLLM(rm); err == nil {
 		t.Fatal("unknown provider type should fail")
 	}
@@ -74,9 +73,9 @@ func TestBuildLLMUnknownType(t *testing.T) {
 // provider's extra: map turned into.
 func clientOf(t *testing.T, prov config.Provider) *openai_compat.Client {
 	t.Helper()
-	llm, err := buildLLM(resolvedModel{
-		def:      common.ModelDefinition{Name: "m", Provider: prov.Type},
-		provider: prov,
+	llm, err := buildLLM(ResolvedModel{
+		Def:      common.ModelDefinition{Name: "m", Provider: prov.Type},
+		Provider: prov,
 	})
 	if err != nil {
 		t.Fatalf("buildLLM: %v", err)
@@ -134,9 +133,9 @@ func TestExtraMaxCompletionTokens(t *testing.T) {
 func TestExtraIgnoredOnOtherTypes(t *testing.T) {
 	for _, typ := range []string{"anthropic", "ollama"} {
 		t.Run(typ, func(t *testing.T) {
-			_, err := buildLLM(resolvedModel{
-				def: common.ModelDefinition{Name: "m", Provider: typ},
-				provider: config.Provider{
+			_, err := buildLLM(ResolvedModel{
+				Def: common.ModelDefinition{Name: "m", Provider: typ},
+				Provider: config.Provider{
 					Name: "p", Type: typ,
 					Extra: map[string]any{"provider.sort": "throughput", "max_completion_tokens": true},
 				},
@@ -154,9 +153,9 @@ func TestExtraIgnoredOnOtherTypes(t *testing.T) {
 func TestBuildLLMEmptyURL(t *testing.T) {
 	for _, typ := range []string{"anthropic", "ollama"} {
 		t.Run(typ, func(t *testing.T) {
-			_, err := buildLLM(resolvedModel{
-				def:      common.ModelDefinition{Name: "m", Provider: typ},
-				provider: config.Provider{Name: "p", Type: typ},
+			_, err := buildLLM(ResolvedModel{
+				Def:      common.ModelDefinition{Name: "m", Provider: typ},
+				Provider: config.Provider{Name: "p", Type: typ},
 			})
 			if err != nil {
 				t.Errorf("buildLLM(%s) with no url: %v", typ, err)

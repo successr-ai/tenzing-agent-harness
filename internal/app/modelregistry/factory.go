@@ -1,4 +1,4 @@
-package main
+package modelregistry
 
 import (
 	"fmt"
@@ -25,8 +25,8 @@ const maxCompletionTokensKey = "max_completion_tokens"
 // declares both, so there is no env-var fallback. A provider's URL may be
 // empty only for anthropic and ollama, whose clients carry their vendor's
 // endpoint; the client options treat empty as "keep the default".
-func buildLLM(rm resolvedModel) (common.LLM, error) {
-	def, prov := rm.def, rm.provider
+func buildLLM(rm ResolvedModel) (common.LLM, error) {
+	def, prov := rm.Def, rm.Provider
 	key, url := prov.APIKey, prov.URL
 
 	switch prov.Type {
@@ -48,21 +48,27 @@ func buildLLM(rm resolvedModel) (common.LLM, error) {
 		}
 		return protoollama.NewClient(def, opts...)
 	case config.DefaultProviderType:
-		// The provider's own name, not its type: several openai_compat
-		// backends can be declared at once, and "groq" is more use in a log
-		// line than "openai_compat" repeated.
-		opts := []openai_compat.ClientOption{
-			openai_compat.WithName(prov.Name),
-			openai_compat.WithAPIKey(key),
-			openai_compat.WithBaseURL(url),
-		}
-		if def.ReasoningEffort != "" {
-			opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
-		}
-		return openai_compat.NewClient(def, append(opts, extraOptions(prov.Extra)...)...)
+		return openai_compat.NewClient(def, compatOptions(def, prov)...)
 	default:
 		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, common.ErrUnknownProvider)
 	}
+}
+
+// compatOptions builds the openai_compat client's option list: the provider's
+// own name (not its type — several compat backends can be declared at once,
+// and "groq" is more use in a log line than "openai_compat" repeated),
+// endpoint and key, the reasoning effort when set, and the provider's
+// extra: map turned into verbatim request-field options.
+func compatOptions(def common.ModelDefinition, prov config.Provider) []openai_compat.ClientOption {
+	opts := []openai_compat.ClientOption{
+		openai_compat.WithName(prov.Name),
+		openai_compat.WithAPIKey(prov.APIKey),
+		openai_compat.WithBaseURL(prov.URL),
+	}
+	if def.ReasoningEffort != "" {
+		opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
+	}
+	return append(opts, extraOptions(prov.Extra)...)
 }
 
 // extraOptions turns a provider's extra: map into client options: the
@@ -86,29 +92,34 @@ func extraOptions(extra map[string]any) []openai_compat.ClientOption {
 	return opts
 }
 
-// llmCache builds LLM clients on demand via buildLLM and reuses one client
+// Factory builds LLM clients on demand via buildLLM and reuses one client
 // per distinct provider/model/reasoning-effort, so model switch-back is free
 // and roles sharing a model share a client (effort is in the key because
-// inline model refs can name the same model at different tiers).
-type llmCache struct {
+// inline model refs can name the same model at different tiers). Construct
+// with NewFactory and inject it; there is no process-wide instance.
+type Factory struct {
 	mu      sync.Mutex
 	clients map[string]common.LLM
 }
 
-// llms is the process-wide client cache, alongside the models registry.
-var llms = &llmCache{clients: make(map[string]common.LLM)}
+// NewFactory returns an empty client cache.
+func NewFactory() *Factory {
+	return &Factory{clients: make(map[string]common.LLM)}
+}
 
-func (c *llmCache) get(rm resolvedModel) (common.LLM, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cacheKey := fmt.Sprintf("%s|%s|%s", rm.provider.Name, rm.def.Name, rm.def.ReasoningEffort)
-	if llm, ok := c.clients[cacheKey]; ok {
+// Get returns the cached client for the resolved model, building it on
+// first use.
+func (f *Factory) Get(rm ResolvedModel) (common.LLM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cacheKey := fmt.Sprintf("%s|%s|%s", rm.Provider.Name, rm.Def.Name, rm.Def.ReasoningEffort)
+	if llm, ok := f.clients[cacheKey]; ok {
 		return llm, nil
 	}
 	llm, err := buildLLM(rm)
 	if err != nil {
-		return nil, fmt.Errorf("build LLM for %s: %w", rm.def.Name, err)
+		return nil, fmt.Errorf("build LLM for %s: %w", rm.Def.Name, err)
 	}
-	c.clients[cacheKey] = llm
+	f.clients[cacheKey] = llm
 	return llm, nil
 }

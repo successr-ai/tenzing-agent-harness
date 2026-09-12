@@ -152,7 +152,7 @@ func TestProjectConfigSystemPromptContent(t *testing.T) {
 			opts := append(pc.harnessOpts(),
 				harness.WithAgentBuilder(func(_ common.LLM, sp string) (core.Agent, error) {
 					captured = sp
-					return &gatedAgent{gate: make(chan struct{})}, nil
+					return &stubAgent{}, nil
 				}),
 				harness.WithSubagentDepth(0),
 				harness.WithContextFilesDisabled(),

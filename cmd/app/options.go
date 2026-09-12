@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
@@ -63,7 +64,7 @@ type cliConfig struct {
 	SettingsPath string // --settings; "" = TENZING_SETTINGS or ./settings.json
 	// BashAllow appends approved globs to the resolved settings file and to
 	// PermissionPolicy.Bash. Set alongside PermissionPolicy in RunE.
-	BashAllow        *bashAllowStore
+	BashAllow        *app.BashAllowStore
 	MCPServers       []string           // --mcp-server "name=cmd args" strings
 	MCPServerConfigs []mcp.ServerConfig // pre-parsed servers from tenzing.yaml
 	ConversationID   string
@@ -83,6 +84,10 @@ type cliConfig struct {
 	// (session.DefaultDir() and os.Getwd()).
 	sessionDir string
 	cwd        string
+
+	// deps is the model registry + LLM client factory built in RunE after
+	// the config file loads; tests inject their own via testDeps.
+	deps *deps
 }
 
 // parseMCPServer parses "name=command arg1 arg2" into an mcp.ServerConfig.
@@ -110,11 +115,11 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 		if ref == "" {
 			return nil
 		}
-		rm, err := resolveModel(ref)
+		rm, err := cfg.deps.resolve(ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", flag, err)
 		}
-		llm, err := llms.get(rm)
+		llm, err := cfg.deps.llms.Get(rm)
 		if err != nil {
 			return fmt.Errorf("%s: %w", flag, err)
 		}

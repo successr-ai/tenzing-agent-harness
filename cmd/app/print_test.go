@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
@@ -94,8 +95,23 @@ func printCfg(t *testing.T) *cliConfig {
 	return &cliConfig{
 		Prompt:       "hello",
 		OutputFormat: "text",
-		Model:        seedRegistry(t),
+		Model:        "test-model",
+		deps:         printDeps(t),
 	}
+}
+
+// printDeps builds a deps pair declaring the one model print tests resolve,
+// "test-model", bound to the ollama test provider.
+func printDeps(t *testing.T) *deps {
+	t.Helper()
+	d, err := buildDeps(
+		[]cfgfile.Provider{{Name: "local", Type: "ollama", URL: "http://localhost:11434"}},
+		[]cfgfile.ModelEntry{{Name: "test-model", Provider: "local", ModelName: "glm-5.3"}},
+		nil)
+	if err != nil {
+		t.Fatalf("buildDeps: %v", err)
+	}
+	return d
 }
 
 func TestRunPrintText(t *testing.T) {

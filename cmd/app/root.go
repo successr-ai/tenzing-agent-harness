@@ -59,18 +59,14 @@ func newRootCmd() *cobra.Command {
 
 			// --provider entries are merged over the file's by name, so a
 			// flag can repoint one provider without restating the rest.
-			providers, err := mergeProviderFlags(file.Providers, cfg.Providers)
-			if err != nil {
-				return err
-			}
-			reg, err := buildRegistry(providers, file.Models)
+			d, err := buildDeps(file.Providers, file.Models, cfg.Providers)
 			if err != nil {
 				return fmt.Errorf("config %s: %w", cfgPath, err)
 			}
-			models = reg
+			cfg.deps = d
 
 			if cfg.ListModels {
-				fmt.Fprint(cmd.OutOrStdout(), modelList())
+				fmt.Fprint(cmd.OutOrStdout(), d.models.List())
 				return nil
 			}
 			if cmd.Flags().Changed("prompt") && cfg.Prompt == "" {
@@ -93,7 +89,7 @@ func newRootCmd() *cobra.Command {
 				return fmt.Errorf("no model selected: set model: in %s or pass --model", cfgPath)
 			}
 			// Validate the main model up front for both modes.
-			if _, err := resolveModel(cfg.Model); err != nil {
+			if _, err := cfg.deps.resolve(cfg.Model); err != nil {
 				return err
 			}
 

@@ -240,7 +240,9 @@ func TestRootCmdProviderFlag(t *testing.T) {
 
 	orig := runPrintFn
 	t.Cleanup(func() { runPrintFn = orig })
-	runPrintFn = func(_ context.Context, _ *cliConfig, _, _ io.Writer, _ ...harness.HarnessOption) error {
+	var got *deps
+	runPrintFn = func(_ context.Context, cfg *cliConfig, _, _ io.Writer, _ ...harness.HarnessOption) error {
+		got = cfg.deps
 		return nil
 	}
 
@@ -253,12 +255,12 @@ func TestRootCmdProviderFlag(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	rm, err := models.resolve("alpha")
+	rm, err := got.models.Resolve("alpha")
 	if err != nil {
 		t.Fatalf("resolve alpha: %v", err)
 	}
-	if rm.provider.URL != "http://box:11434" || rm.provider.APIKey != "sk-flag" {
-		t.Errorf("--provider did not reach the registry: %+v", rm.provider)
+	if rm.Provider.URL != "http://box:11434" || rm.Provider.APIKey != "sk-flag" {
+		t.Errorf("--provider did not reach the registry: %+v", rm.Provider)
 	}
 }
 
@@ -306,7 +308,6 @@ func isolateConfig(t *testing.T, extra string) string {
 	}
 	t.Setenv("TENZING_CONFIG", path)
 	redirectUserConfig(t)
-	t.Cleanup(func() { models = emptyRegistry() })
 	return path
 }
 
@@ -343,7 +344,6 @@ func TestRootCmdModelPrecedence(t *testing.T) {
 			// Isolate the per-user config fallback: without this the
 			// developer's own user config would satisfy the "no file" case.
 			redirectUserConfig(t)
-			t.Cleanup(func() { models = emptyRegistry() })
 
 			orig := runPrintFn
 			t.Cleanup(func() { runPrintFn = orig })
@@ -472,7 +472,6 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { models = emptyRegistry() })
 
 		orig := runPrintFn
 		t.Cleanup(func() { runPrintFn = orig })
@@ -501,7 +500,7 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if got.SubagentDepth != 0 || !got.SubagentDepthSet {
 			t.Errorf("subagent_depth 0 not applied: depth=%d set=%v", got.SubagentDepth, got.SubagentDepthSet)
 		}
-		if _, err := models.resolve("alpha"); err != nil {
+		if _, err := got.deps.models.Resolve("alpha"); err != nil {
 			t.Errorf("model from config not registered: %v", err)
 		}
 	})
@@ -521,7 +520,6 @@ func TestRootCmdConfigFile(t *testing.T) {
 		if err := os.WriteFile(path, []byte(testConfigYAML), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { models = emptyRegistry() })
 
 		out := &bytes.Buffer{}
 		cmd := newRootCmd()

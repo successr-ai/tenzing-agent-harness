@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -20,13 +20,13 @@ import (
 // prompt). AGENTS.md context files are exempt: they inform the agent, they
 // are not executed as instructions verbatim (matching Pi).
 
-type trustEntry struct {
+type TrustEntry struct {
 	Trusted bool   `json:"trusted"`
 	Decided string `json:"decided"`
 }
 
-// trustFilePath returns <UserConfigDir>/tenzing/trust.json.
-func trustFilePath() (string, error) {
+// TrustFilePath returns <UserConfigDir>/tenzing/trust.json.
+func TrustFilePath() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("user config dir: %w", err)
@@ -34,27 +34,27 @@ func trustFilePath() (string, error) {
 	return filepath.Join(base, "tenzing", "trust.json"), nil
 }
 
-// loadTrustFile reads the trust map; a missing file is an empty map.
-func loadTrustFile(path string) (map[string]trustEntry, error) {
+// LoadTrustFile reads the trust map; a missing file is an empty map.
+func LoadTrustFile(path string) (map[string]TrustEntry, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]trustEntry{}, nil
+		return map[string]TrustEntry{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read trust file: %w", err)
 	}
-	var m map[string]trustEntry
+	var m map[string]TrustEntry
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if m == nil {
-		m = map[string]trustEntry{}
+		m = map[string]TrustEntry{}
 	}
 	return m, nil
 }
 
 // saveTrustFile writes the trust map atomically (temp file then rename).
-func saveTrustFile(path string, m map[string]trustEntry) error {
+func saveTrustFile(path string, m map[string]TrustEntry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create trust dir: %w", err)
 	}
@@ -83,12 +83,12 @@ func saveTrustFile(path string, m map[string]trustEntry) error {
 	return nil
 }
 
-// resolveProjectTrust reports whether project-local config in dir may be
+// ResolveProjectTrust reports whether project-local config in dir may be
 // loaded, and where the answer came from ("persisted", "env", "default", or
 // "error"). A persisted decision wins; otherwise envDefault "trust" grants,
 // anything else skips.
-func resolveProjectTrust(path, dir, envDefault string) (trusted bool, source string) {
-	m, err := loadTrustFile(path)
+func ResolveProjectTrust(path, dir, envDefault string) (trusted bool, source string) {
+	m, err := LoadTrustFile(path)
 	if err != nil {
 		slog.Warn("trust file unreadable, treating project as untrusted", "path", path, "error", err)
 		return false, "error"
@@ -102,15 +102,15 @@ func resolveProjectTrust(path, dir, envDefault string) (trusted bool, source str
 	return false, "default"
 }
 
-// setProjectTrust persists a trust decision for dir.
-func setProjectTrust(path, dir string, trusted bool, now time.Time) error {
-	m, err := loadTrustFile(path)
+// SetProjectTrust persists a trust decision for dir.
+func SetProjectTrust(path, dir string, trusted bool, now time.Time) error {
+	m, err := LoadTrustFile(path)
 	if err != nil {
 		return err
 	}
-	updated := make(map[string]trustEntry, len(m)+1)
+	updated := make(map[string]TrustEntry, len(m)+1)
 	maps.Copy(updated, m)
-	updated[filepath.Clean(dir)] = trustEntry{
+	updated[filepath.Clean(dir)] = TrustEntry{
 		Trusted: trusted,
 		Decided: now.UTC().Format(time.RFC3339),
 	}

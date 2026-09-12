@@ -1,4 +1,4 @@
-package main
+package ui
 
 const indexHTML = `<!DOCTYPE html>
 <html lang="en">

@@ -11,14 +11,14 @@ import (
 	"sort"
 	"time"
 
+	"github.com/successr-ai/tenzing-agent-harness/api"
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/nexus"
 	nexustools "github.com/successr-ai/tenzing-agent-harness/internal/app/nexus/tools"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
-	httpserver "github.com/tab58/huma-http-server"
-	"github.com/tab58/huma-http-server/router"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 type Config struct {
@@ -32,21 +32,22 @@ type Config struct {
 }
 
 // AppContainer wires all app-level dependencies for cmd/app: config,
-// logging, the agent server (which owns the harness and LLM), and the
-// HTTP server it is mounted on.
+// logging, the event bus, the harness (with its LLM), and the API server
+// the harness is injected into.
 type AppContainer struct {
 	cfg     *cliConfig
 	cwd     string
 	logFile *os.File
 	logB    *app.LogBroadcaster
-	api     *agentServer
+	bus     *eventbus.EventBus
+	harness *harness.Harness
+	srv     *api.Server
 	nexus   *nexus.Nexus
-	server  *httpserver.Server[router.MapAuthInfo]
 }
 
 // NewAppContainer builds the container eagerly: config → cwd → logging →
-// agent server (harness + event bus) → HTTP routes. Any failure after the
-// log file opens closes it before returning.
+// API server → harness (attached to the server). Any failure after the log
+// file opens closes it before returning.
 func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -59,7 +60,7 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 		return nil, err
 	}
 
-	model, err := resolveModel(cfg.Model)
+	model, err := cfg.deps.resolve(cfg.Model)
 	if err != nil {
 		logFile.Close()
 		return nil, err
@@ -73,14 +74,14 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 		return nil, fmt.Errorf("nexus config: %w", err)
 	}
 
-	// api is late-bound: the trigger's wake closure runs only after
-	// nx.Start below, by which time api is set.
-	var api *agentServer
+	// srv is late-bound: the trigger's wake closure runs only after
+	// nx.Start below, by which time srv is set.
+	var srv *api.Server
 	trig := nexus.NewTrigger(30*time.Second, func(channels []string) bool {
-		if api == nil {
+		if srv == nil {
 			return false
 		}
-		return api.startNexusTurn(channels)
+		return srv.StartNexusTurn(channels)
 	})
 
 	var nx *nexus.Nexus
@@ -99,11 +100,11 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	trustSource := "flag"
 	if !trusted {
 		trustSource = "error"
-		trustPath, err := trustFilePath()
+		trustPath, err := app.TrustFilePath()
 		if err != nil {
 			slog.Warn("trust file path unavailable, treating project as untrusted", "error", err)
 		} else {
-			trusted, trustSource = resolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
+			trusted, trustSource = app.ResolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
 		}
 	}
 	slog.Info("project trust resolved", "cwd", cwd, "trusted", trusted, "source", trustSource)
@@ -130,37 +131,64 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 		)
 	}
 
-	api, err = newAgentServer(model, bus, nx, logB, trig.TurnEnded, models.pricing, extraOpts...)
+	apiCfg := api.ServerConfig{
+		Bus:       bus,
+		Logs:      logB,
+		OnTurnEnd: trig.TurnEnded,
+		Pricing:   cfg.deps.models.Pricing(),
+		ResolveLLM: func(ref string) (common.LLM, error) {
+			rm, err := cfg.deps.resolve(ref)
+			if err != nil {
+				return nil, err
+			}
+			return cfg.deps.llms.Get(rm)
+		},
+		ModelNames:      cfg.deps.models.Names,
+		Cwd:             cwd,
+		TrustEnvDefault: cfg.ProjectTrust,
+		Debug:           cfg.Debug,
+	}
+	// Interface fields must stay unset (not hold a typed nil) when absent.
+	if nx != nil {
+		apiCfg.Nexus = nx
+	}
+	if cfg.BashAllow != nil {
+		apiCfg.BashAllow = cfg.BashAllow
+	}
+	srv = api.New(apiCfg)
+
+	opts := append([]harness.HarnessOption{
+		harness.WithEventBus(bus),
+		harness.WithTextDeltaHandler(srv.TextDelta),
+		harness.WithThinkingDeltaHandler(srv.ThinkingDelta),
+	}, extraOpts...)
+	mainLLM, err := cfg.deps.llms.Get(model)
 	if err != nil {
 		logFile.Close()
 		return nil, err
 	}
-	api.models = models
-	api.cwd = cwd
-	api.bashAllow = cfg.BashAllow
-	api.trustEnvDefault = cfg.ProjectTrust
-	api.debug = cfg.Debug
+	h, err := harness.New(mainLLM, opts...)
+	if err != nil {
+		logFile.Close()
+		return nil, fmt.Errorf("harness init: %w", err)
+	}
+	srv.Attach(h)
 
 	if nx != nil {
 		nx.Start(context.Background())
 	}
 
-	server := httpserver.New(httpserver.ServerConfig{
-		ServiceName:    "tenzing-agent",
-		ServiceVersion: "0.1.0",
-	}, router.MapAuthInfoBuilder)
-	api.registerRoutes(server)
-
-	slog.Info("container ready", "model", api.harness.GetCurrentModel(), "cwd", cwd, "tools", len(api.harness.ToolDefinitions()))
+	slog.Info("container ready", "model", h.GetCurrentModel(), "cwd", cwd, "tools", len(h.ToolDefinitions()))
 
 	return &AppContainer{
 		cfg:     cfg,
 		cwd:     cwd,
 		logFile: logFile,
 		logB:    logB,
-		api:     api,
+		bus:     bus,
+		harness: h,
+		srv:     srv,
 		nexus:   nx,
-		server:  server,
 	}, nil
 }
 
@@ -186,7 +214,7 @@ func setupLogging(debug bool, tee io.Writer) (*os.File, error) {
 
 // Start runs the HTTP server until ctx is cancelled or the server fails.
 func (ac *AppContainer) Start(ctx context.Context) error {
-	errCh, err := ac.server.Start(fmt.Sprintf("127.0.0.1:%d", ac.cfg.Port))
+	errCh, err := ac.srv.Start(fmt.Sprintf("127.0.0.1:%d", ac.cfg.Port))
 	if err != nil {
 		return fmt.Errorf("http server start: %w", err)
 	}
@@ -202,29 +230,29 @@ func (ac *AppContainer) Start(ctx context.Context) error {
 	}
 }
 
-// Shutdown stops nexus sources (so no new notifies can fire), cancels any
-// in-flight turn, ends open SSE streams (they would otherwise block the
-// graceful HTTP shutdown until its timeout), stops the HTTP server, the
-// harness, the event bus (which ends the SSE forwarding goroutine), and
-// closes the log file. Called once from main's defer.
+// Shutdown stops nexus sources (so no new notifies can fire), ends the
+// /debug log stream, stops the API server (which cancels any in-flight
+// turn and ends open SSE streams — they would otherwise block the graceful
+// HTTP shutdown until its timeout), then the harness, the event bus (which
+// ends the SSE forwarding goroutine), and closes the log file. Called once
+// from main's defer.
 func (ac *AppContainer) Shutdown() {
 	if ac.nexus != nil {
 		ac.nexus.Stop()
 	}
-	ac.api.cancelActiveTurn()
 	ac.logB.Close()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := ac.server.Shutdown(shutdownCtx); err != nil {
+	if err := ac.srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("http server shutdown", "error", err)
 	}
-	ac.api.harness.Shutdown()
-	ac.api.bus.Close()
+	ac.harness.Shutdown()
+	ac.bus.Close()
 	ac.logFile.Close()
 }
 
 func (ac *AppContainer) Harness() *harness.Harness {
-	return ac.api.harness
+	return ac.harness
 }
 
 func (ac *AppContainer) Cwd() string {

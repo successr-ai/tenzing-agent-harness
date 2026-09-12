@@ -77,6 +77,7 @@ func TestHarnessOptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.deps = testDeps(t)
 			got, err := harnessOptions(&tt.cfg)
 			if tt.wantErr {
 				if err == nil {
@@ -99,7 +100,7 @@ func TestHarnessOptionsSystemFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("be terse"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	opts, err := harnessOptions(&cliConfig{SystemFile: path})
+	opts, err := harnessOptions(&cliConfig{SystemFile: path, deps: testDeps(t)})
 	if err != nil {
 		t.Fatalf("harnessOptions: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestHarnessOptionsSystemFile(t *testing.T) {
 func TestHarnessOptionsContinueLatest(t *testing.T) {
 	dir := t.TempDir()
 	cwd := t.TempDir()
-	cfg := &cliConfig{ContinueLatest: true, sessionDir: dir, cwd: cwd}
+	cfg := &cliConfig{ContinueLatest: true, sessionDir: dir, cwd: cwd, deps: testDeps(t)}
 
 	// no sessions yet → fresh start, no resume option
 	opts, err := harnessOptions(cfg)

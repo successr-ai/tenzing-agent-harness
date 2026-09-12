@@ -16,6 +16,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/wire"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
@@ -99,7 +100,7 @@ func extractImageArgs(args []string) ([]string, []common.ImageSource, error) {
 // stderr; logs go to the log file. extraOpts is the test seam for stub
 // LLM/brain injection.
 func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, extraOpts ...harness.HarnessOption) error {
-	model, err := resolveModel(cfg.Model)
+	model, err := cfg.deps.resolve(cfg.Model)
 	if err != nil {
 		return err
 	}
@@ -129,8 +130,8 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 	// override files.
 	trusted := cfg.Trust
 	if !trusted {
-		if trustPath, err := trustFilePath(); err == nil {
-			trusted, _ = resolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
+		if trustPath, err := app.TrustFilePath(); err == nil {
+			trusted, _ = app.ResolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
 		}
 	}
 	cfgDir, _ := os.UserConfigDir()
@@ -217,7 +218,7 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 
 	opts = append(opts, extraOpts...)
 
-	mainLLM, err := llms.get(model)
+	mainLLM, err := cfg.deps.llms.Get(model)
 	if err != nil {
 		return fmt.Errorf("harness init: %w", err)
 	}

@@ -1,6 +1,6 @@
 // Package wire defines the stable JSONL wire schema for harness events —
 // the contract consumed by print mode (cmd/app -p --output-format json),
-// the serve-mode SSE stream (cmd/app/server.go builds its payloads from
+// the serve-mode SSE stream (api/sse/translate.go builds its payloads from
 // these envelopes), and, later, RPC mode (PI item 13). Payload structs here
 // are deliberately decoupled from internal/core's and internal/app/nexus's
 // event structs: those packages can rename fields or tags without breaking

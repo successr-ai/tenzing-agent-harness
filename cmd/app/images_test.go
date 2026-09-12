@@ -1,65 +1,12 @@
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/tab58/huma-http-server/router"
 )
-
-func TestValidateImages(t *testing.T) {
-	valid := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
-	tests := []struct {
-		name    string
-		in      []imageInput
-		wantErr string
-	}{
-		{"nil ok", nil, ""},
-		{"valid", []imageInput{{MediaType: "image/png", Data: valid}}, ""},
-		{"bad media type", []imageInput{{MediaType: "text/html", Data: valid}}, "not an image MIME type"},
-		{"empty data", []imageInput{{MediaType: "image/png", Data: ""}}, "empty data"},
-		{"bad base64", []imageInput{{MediaType: "image/png", Data: "not!!base64"}}, "not valid base64"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := validateImages(tt.in)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("validateImages: %v", err)
-			}
-			if len(out) != len(tt.in) {
-				t.Errorf("got %d images, want %d", len(out), len(tt.in))
-			}
-		})
-	}
-}
-
-// The test server's model has no vision support: image-bearing queries get a
-// clean 400 before any turn starts.
-func TestHandleQueryRejectsImagesOnNonVisionModel(t *testing.T) {
-	agent := &gatedAgent{gate: make(chan struct{})}
-	api := newTestServer(t, agent)
-
-	in := &queryInput{}
-	in.Body.Query = "what is this?"
-	in.Body.Images = []imageInput{{MediaType: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("x"))}}
-	_, err := api.handleQuery(context.Background(), router.MapAuthInfo{}, in)
-	if err == nil || !strings.Contains(err.Error(), "does not support image input") {
-		t.Fatalf("err = %v, want vision-capability 400", err)
-	}
-	if len(agent.seen()) != 0 {
-		t.Error("turn started despite capability rejection")
-	}
-}
 
 func TestExtractImageArgs(t *testing.T) {
 	dir := t.TempDir()

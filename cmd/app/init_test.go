@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/modelregistry"
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 )
 
@@ -104,14 +105,14 @@ func TestEmbeddedDefaultsAreValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("defaults/tenzing.yaml: %v", err)
 	}
-	reg, err := buildRegistry(f.Providers, f.Models)
+	reg, err := modelregistry.Build(f.Providers, f.Models)
 	if err != nil {
 		t.Fatalf("defaults/tenzing.yaml registry: %v", err)
 	}
 	if f.Model == "" {
 		t.Error("defaults/tenzing.yaml sets no model:")
 	}
-	if _, err := reg.resolve(f.Model); err != nil {
+	if _, err := reg.Resolve(f.Model); err != nil {
 		t.Errorf("defaults/tenzing.yaml model %q: %v", f.Model, err)
 	}
 	if _, err := loadSettingsFile(filepath.Join(dir, "settings.json"), true); err != nil {

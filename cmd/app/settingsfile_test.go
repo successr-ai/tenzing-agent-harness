@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/successr-ai/tenzing-agent-harness/internal/app"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
 )
 
@@ -179,7 +180,7 @@ func TestApplyBashRules(t *testing.T) {
 		if _, ok := cfg.PermissionPolicy.Bash.Verdict("ls -la"); ok {
 			t.Error("want no verdict from empty rules")
 		}
-		if cfg.BashAllow == nil || cfg.BashAllow.path != "settings.json" {
+		if cfg.BashAllow == nil || cfg.BashAllow.Path() != "settings.json" {
 			t.Errorf("store = %+v", cfg.BashAllow)
 		}
 	})
@@ -207,109 +208,6 @@ func TestApplyBashRules(t *testing.T) {
 	})
 }
 
-// bashAllowStore persists to the settings file and updates the live rules.
-func TestBashAllowStoreAdd(t *testing.T) {
-	newStore := func(t *testing.T, body string) *bashAllowStore {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), defaultSettingsPath)
-		rules := permissions.NewBashRules(nil, nil)
-		if body != "" {
-			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			loaded, err := loadSettingsFile(path, true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if loaded != nil {
-				rules = loaded
-			}
-		}
-		return &bashAllowStore{path: path, rules: rules}
-	}
-
-	t.Run("creates a missing file and applies live", func(t *testing.T) {
-		s := newStore(t, "")
-		if err := s.Add("git *"); err != nil {
-			t.Fatal(err)
-		}
-		if d, ok := s.rules.Verdict("git status"); !ok || d != 0 {
-			t.Errorf("Verdict = (%v, %v), want an allow", d, ok)
-		}
-		reloaded, err := loadSettingsFile(s.path, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		allow, _ := reloaded.Lists()
-		if len(allow) != 1 || allow[0] != "git *" {
-			t.Errorf("persisted allow = %v, want [git *]", allow)
-		}
-	})
-
-	t.Run("appends without dropping deny or other keys", func(t *testing.T) {
-		s := newStore(t, `{"permissions":{"bash":{"allow":["ls *"],"deny":["rm *"]},"write":{"allow":["*"]}},"future":{"k":1}}`)
-		if err := s.Add("git *"); err != nil {
-			t.Fatal(err)
-		}
-		data, err := os.ReadFile(s.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var doc map[string]json.RawMessage
-		if err := json.Unmarshal(data, &doc); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := doc["future"]; !ok {
-			t.Error("want unknown top-level keys preserved")
-		}
-		var perms map[string]json.RawMessage
-		if err := json.Unmarshal(doc["permissions"], &perms); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := perms["write"]; !ok {
-			t.Error("want other tools under permissions preserved")
-		}
-		reloaded, err := loadSettingsFile(s.path, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		allow, deny := reloaded.Lists()
-		if len(allow) != 2 || allow[0] != "ls *" || allow[1] != "git *" {
-			t.Errorf("allow = %v, want [ls * git *]", allow)
-		}
-		if len(deny) != 1 || deny[0] != "rm *" {
-			t.Errorf("deny = %v, want [rm *]", deny)
-		}
-	})
-
-	t.Run("duplicate is a no-op", func(t *testing.T) {
-		s := newStore(t, `{"permissions":{"bash":{"allow":["ls *"]}}}`)
-		if err := s.Add("ls *"); err != nil {
-			t.Fatal(err)
-		}
-		reloaded, err := loadSettingsFile(s.path, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if allow, _ := reloaded.Lists(); len(allow) != 1 {
-			t.Errorf("allow = %v, want one entry", allow)
-		}
-	})
-
-	t.Run("malformed file errors without changing the live rules", func(t *testing.T) {
-		s := newStore(t, "")
-		if err := os.WriteFile(s.path, []byte(`{"permissions":`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.Add("git *"); err == nil {
-			t.Fatal("want an error")
-		}
-		if _, ok := s.rules.Verdict("git status"); ok {
-			t.Error("want the live rules untouched after a failed write")
-		}
-	})
-}
-
 // Tool names in the permissions map are matched case-insensitively, and a
 // rewrite keeps the spelling the file already used rather than adding a
 // second entry differing only in case.
@@ -331,7 +229,7 @@ func TestSettingsToolNameCaseInsensitive(t *testing.T) {
 		t.Fatalf("allow = %v", allow)
 	}
 
-	store := &bashAllowStore{path: path, rules: rules}
+	store := app.NewBashAllowStore(path, rules)
 	if err := store.Add("head *"); err != nil {
 		t.Fatal(err)
 	}
