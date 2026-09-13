@@ -77,6 +77,11 @@ type cliConfig struct {
 	NexusConfig string
 	Debug       bool
 
+	// connect (--connect mode; the fleet dial-out contract)
+	ConnectURL     string
+	ConnectToken   string
+	ConnectBackoff time.Duration
+
 	// env-only (no flags; filled from Config in RunE)
 	ProjectTrust string
 

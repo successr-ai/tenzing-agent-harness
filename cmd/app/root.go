@@ -114,16 +114,32 @@ func newRootCmd() *cobra.Command {
 			}
 			applyBashRules(cfg, settingsPath, bashRules)
 
+			// Mode dispatch: print (-p) > connect (--connect / connect: in
+			// tenzing.yaml) > serve. Mutually exclusive.
+			if cfg.Prompt != "" && cfg.ConnectURL != "" {
+				return errors.New("--connect and -p are mutually exclusive")
+			}
 			if cfg.Prompt != "" {
 				// Warns on explicit CLI flags only — SERVER_PORT/NEXUS_CONFIG
 				// env vars merged above stay silent by design (ambient env
 				// shouldn't nag every print run).
-				for _, name := range []string{"port", "nexus-config"} {
+				for _, name := range []string{"port", "nexus-config", "connect", "connect-token"} {
 					if cmd.Flags().Changed(name) {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: --%s is ignored in print mode\n", name)
 					}
 				}
 				return runPrintFn(cmd.Context(), cfg, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
+			if cfg.ConnectURL != "" {
+				if cmd.Flags().Changed("timeout") {
+					fmt.Fprintln(cmd.ErrOrStderr(), "warning: --timeout is ignored in connect mode")
+				}
+				for _, name := range []string{"port", "nexus-config"} {
+					if cmd.Flags().Changed(name) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: --%s is ignored in connect mode\n", name)
+					}
+				}
+				return runConnect(cmd.Context(), cfg)
 			}
 			if cmd.Flags().Changed("timeout") {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: --timeout is ignored in serve mode")
@@ -174,6 +190,10 @@ func newRootCmd() *cobra.Command {
 	fl.StringVar(&cfg.NexusConfig, "nexus-config", "nexus.yaml", "nexus channel config path (env NEXUS_CONFIG)")
 	fl.BoolVar(&cfg.Debug, "debug", false, "trace-level logging to a fresh log file (env LOG_DEBUG)")
 
+	fl.StringVar(&cfg.ConnectURL, "connect", "", "control-plane mode: dial this ws:// or wss:// endpoint instead of listening (env TENZING_CONNECT; tenzing.yaml connect:)")
+	fl.StringVar(&cfg.ConnectToken, "connect-token", "", "bearer token for the control-plane upgrade request (env TENZING_CONNECT_TOKEN; tenzing.yaml connect.token)")
+	fl.DurationVar(&cfg.ConnectBackoff, "connect-backoff", 0, "reconnect delay base for connect mode, e.g. 2s (doubles to a 30s cap; default 1s; tenzing.yaml connect.backoff)")
+
 	return cmd
 }
 
@@ -201,5 +221,17 @@ func mergeEnv(cfg *cliConfig, env *Config, changed func(name string) bool, prese
 	}
 	if !changed("nexus-config") && present("NEXUS_CONFIG") {
 		cfg.NexusConfig = env.NexusConfig
+	}
+	// Connect env vars: TENZING_CONNECT / TENZING_CONNECT_TOKEN fill the
+	// flag default like the three above (flag > env > file).
+	if !changed("connect") {
+		if v := os.Getenv("TENZING_CONNECT"); v != "" {
+			cfg.ConnectURL = v
+		}
+	}
+	if !changed("connect-token") {
+		if v := os.Getenv("TENZING_CONNECT_TOKEN"); v != "" {
+			cfg.ConnectToken = v
+		}
 	}
 }

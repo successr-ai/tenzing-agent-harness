@@ -1,0 +1,150 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/successr-ai/tenzing-agent-harness/internal/app/wsclient"
+	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
+)
+
+// TestConnectModeExclusiveWithPrompt: --connect and -p cannot combine.
+func TestConnectModeExclusiveWithPrompt(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"-p", "hi", "--connect", "ws://localhost:1/fleet"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("want error for --connect with -p, got nil")
+	}
+}
+
+// TestConnectConfigMerge: tenzing.yaml's connect: section fills the config
+// under flag/env precedence.
+func TestConnectConfigMerge(t *testing.T) {
+	changedNone := func(string) bool { return false }
+	presentNone := func(string) bool { return false }
+
+	t.Run("file fills unset fields", func(t *testing.T) {
+		cfg := &cliConfig{}
+		mergeConfigFile(cfg, cfgfile.File{Connect: &cfgfile.ConnectSection{
+			URL:   "ws://plane:9000/fleet",
+			Token: "secret",
+		}}, changedNone, presentNone)
+		if cfg.ConnectURL != "ws://plane:9000/fleet" || cfg.ConnectToken != "secret" {
+			t.Errorf("connect not merged: %+v", cfg)
+		}
+	})
+
+	t.Run("changed flag beats file", func(t *testing.T) {
+		cfg := &cliConfig{ConnectURL: "ws://flag"}
+		mergeConfigFile(cfg, cfgfile.File{Connect: &cfgfile.ConnectSection{URL: "ws://file"}},
+			func(name string) bool { return name == "connect" }, presentNone)
+		if cfg.ConnectURL != "ws://flag" {
+			t.Errorf("flag lost to file: %q", cfg.ConnectURL)
+		}
+	})
+
+	t.Run("backoff duration carries", func(t *testing.T) {
+		cfg := &cliConfig{}
+		d := cfgfile.Duration(5 * time.Second)
+		mergeConfigFile(cfg, cfgfile.File{Connect: &cfgfile.ConnectSection{Backoff: &d}},
+			changedNone, presentNone)
+		if cfg.ConnectBackoff != 5*time.Second {
+			t.Errorf("backoff = %v, want 5s", cfg.ConnectBackoff)
+		}
+	})
+}
+
+// TestMergeEnvConnect: TENZING_CONNECT / TENZING_CONNECT_TOKEN fill flag
+// defaults.
+func TestMergeEnvConnect(t *testing.T) {
+	t.Setenv("TENZING_CONNECT", "ws://env-plane/fleet")
+	t.Setenv("TENZING_CONNECT_TOKEN", "env-token")
+
+	cfg := &cliConfig{}
+	mergeEnv(cfg, &Config{}, func(string) bool { return false }, func(string) bool { return true })
+	if cfg.ConnectURL != "ws://env-plane/fleet" || cfg.ConnectToken != "env-token" {
+		t.Errorf("env vars not merged: url=%q token=%q", cfg.ConnectURL, cfg.ConnectToken)
+	}
+}
+
+// waitFor polls cond until true or the timeout elapses.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
+
+// TestConnectSerialQueue pins the FIFO + flush semantics of the
+// connect-mode turn queue.
+func TestConnectSerialQueue(t *testing.T) {
+	t.Run("second query waits for the first to finish", func(t *testing.T) {
+		release := make(chan struct{})
+		var mu sync.Mutex
+		var order []string
+		q := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) (string, error, int) {
+			mu.Lock()
+			order = append(order, cmd.ID)
+			mu.Unlock()
+			if cmd.ID == "q1" {
+				<-release
+			}
+			return cmd.ID, nil, 0
+		})
+
+		go func() { _, _, _ = q.run(context.Background(), &wsclient.Query{ID: "q1"}) }()
+		waitFor(t, "q1 running", func() bool { return q.parked() == 1 })
+		done2 := make(chan struct{})
+		go func() { _, _, _ = q.run(context.Background(), &wsclient.Query{ID: "q2"}); close(done2) }()
+		waitFor(t, "q2 parked", func() bool { return q.parked() == 1 })
+
+		close(release)
+		waitFor(t, "both finished", func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(order) == 2
+		})
+		mu.Lock()
+		defer mu.Unlock()
+		if order[0] != "q1" || order[1] != "q2" {
+			t.Errorf("order = %v, want [q1 q2]", order)
+		}
+	})
+
+	t.Run("flush makes waiters report cancelled", func(t *testing.T) {
+		block := make(chan struct{})
+		q := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) (string, error, int) {
+			<-block
+			return "", nil, 0
+		})
+		done1 := make(chan struct{})
+		go func() { _, _, _ = q.run(context.Background(), &wsclient.Query{ID: "q1"}); close(done1) }()
+		done2 := make(chan struct{})
+		var ctxErr error
+		go func() {
+			_, err, _ := q.run(context.Background(), &wsclient.Query{ID: "q2"})
+			ctxErr = err
+			close(done2)
+		}()
+
+		// q2 is parked; flush it like a cancel command would.
+		waitFor(t, "q2 parked", func() bool { return q.parked() == 1 })
+		q.flush()
+		<-done2
+		if ctxErr == nil {
+			t.Error("flushed waiter should report context.Canceled")
+		}
+		close(block)
+		<-done1
+	})
+}

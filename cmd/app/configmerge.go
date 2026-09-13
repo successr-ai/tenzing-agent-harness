@@ -162,6 +162,19 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 		cfg.Debug = true
 	}
 
+	// connect: section (flag > env TENZING_CONNECT > file).
+	if f.Connect != nil {
+		if f.Connect.URL != "" && !changed("connect") {
+			cfg.ConnectURL = f.Connect.URL
+		}
+		if f.Connect.Token != "" && !changed("connect-token") {
+			cfg.ConnectToken = f.Connect.Token
+		}
+		if f.Connect.Backoff != nil && !changed("connect-backoff") {
+			cfg.ConnectBackoff = f.Connect.Backoff.Value()
+		}
+	}
+
 	if f.Permissions != nil {
 		policy := permissionPolicy(*f.Permissions)
 		cfg.PermissionPolicy = &policy

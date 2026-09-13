@@ -312,7 +312,47 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: careful-model`). |
 | `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1x input), `cache_write` (default 1.25x input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |
 
-Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`.
+Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`. The `connect:` section is the file-based equivalent of the `--connect*` flags (see [Connect mode](#connect-mode-control-plane-dial-out)); its precedence is the same flag > env > file chain as everything else.
+
+## Connect mode (control-plane dial-out)
+
+The third run mode: `tenzing` dials a control plane's WebSocket server instead of listening, making it a supervised agent in a fleet. The control plane owns turn submission, steering, approvals, and model selection; each tenzing process streams its harness events back over the same connection.
+
+```bash
+# Dial a control plane (bearer token via env; never on the command line in production)
+TENZING_CONNECT_TOKEN=... go run ./cmd/app --connect ws://plane.internal:9000/fleet --dangerously-skip-permissions
+
+# Or from the config file — the fleet-native form (see connect: below)
+go run ./cmd/app
+
+# Reconnect pacing (optional; default 1s base, doubling to a 30s cap, jittered)
+go run ./cmd/app --connect ws://plane:9000/fleet --connect-backoff 2s
+```
+
+How it behaves:
+
+- **Agent dials home** — outbound-only connection, so the control plane allocates no ports and agents work behind NAT, containers, and firewalls unchanged. Connection establishment is the readiness signal; a `{"type":"ready",...}` line on stdout additionally marks "startup succeeded, dialing next" for crash-before-dial visibility.
+- **A dropped connection cancels the in-flight turn.** The turn is only meaningful while the control plane can observe it — an orphaned turn burning tokens with nobody watching is worse than a cancelled one, and the control plane owns the retry decision. On reconnect the agent reports what happened in `hello.last_turn` (`cancelled_disconnect`) and immediately accepts fresh work; session persistence means a retry resumes rather than starting over.
+- **One turn at a time, follow-ups FIFO.** A `query` arriving mid-turn queues; `cancel` stops the running turn and flushes the queue (serve-mode parity: cancelling wants the agent to stop, not to watch the next query start).
+- **Approvals are push.** A mutating tool call needing approval sends `approval_request` on the socket; the plane answers `approve` on the same connection. For unattended fleets, prefer `dangerously_skip_permissions: true` (sandboxed) or `read_only: true` — the unattended default denies mutating tools after the approval timeout.
+- **Lossless backpressure.** A slow control plane stalls the agent's event pump rather than dropping events; nothing is lost while the connection lives. Disconnection is the only thing that discards a turn's event backlog — by design, since the turn was cancelled.
+
+The normative protocol spec is `docs/adrs/2026-09-12-control-plane-fleet/PROTOCOL.md` (versioned; currently protocol `"1"`): message tables both directions, correlation rules, the handshake, reconnect semantics, auth, and versioning. The control plane is external — build it against that document.
+
+`connect:` section in tenzing.yaml:
+
+```yaml
+connect:
+  url: ws://plane.internal:9000/fleet   # sets connect mode (same as --connect)
+  token: "$TENZING_CONNECT_TOKEN"       # bearer token on the upgrade request
+  backoff: "1s"                         # reconnect delay base; doubles to a 30s cap
+```
+
+| Key | Type | Default | Overridden by | Description |
+|---|---|---|---|---|
+| `connect.url` | URL | unset | `--connect`, `TENZING_CONNECT` | The plane's `ws://`/`wss://` endpoint; setting it puts the process in connect mode. |
+| `connect.token` | string | unset | `--connect-token`, `TENZING_CONNECT_TOKEN` | Bearer token on the upgrade request; `$VAR` expands from the environment. |
+| `connect.backoff` | duration | `"1s"` | `--connect-backoff` | Reconnect delay base; full jitter, doubling to a 30s cap. |
 
 ## HTTP API (serve mode)
 
@@ -345,8 +385,9 @@ go vet ./...            # static analysis
 
 ```
 cmd/
-  app/                  Entry point — cobra CLI: HTTP/SSE server with embedded chat UI
-                        by default, or one-shot print mode (`-p`)
+  app/                  Entry point — cobra CLI with three modes: HTTP/SSE server
+                        with embedded chat UI (default), one-shot print mode (-p),
+                        or control-plane connect mode (--connect)
 
 internal/
   core/                 Invariant domain: types, FSM, events, loop, all ports, the Agent
@@ -369,6 +410,8 @@ internal/
     wire/               Versioned JSONL wire contract (event envelopes for json output / SSE)
     nexus/              Input channel monitoring (file-tail/command/webhook → agent wake-ups)
       tools/            Channel tools (list_channels, read_channel, search_channel)
+    modelregistry/      Model registry + LLM client factory (tenzing.yaml providers:/models:)
+    wsclient/           Control-plane WebSocket client (agent side of connect mode)
 
 docs/                   Reference summaries and API docs
 pkg/

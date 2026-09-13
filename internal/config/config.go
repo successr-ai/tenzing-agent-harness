@@ -57,6 +57,11 @@ type File struct {
 	NexusConfig string `yaml:"nexus_config"`
 	Debug       bool   `yaml:"debug"`
 
+	// Connect configures --connect mode: the process dials the control
+	// plane's WebSocket server instead of listening. URL is required for
+	// the mode; Token and Backoff are optional.
+	Connect *ConnectSection `yaml:"connect"`
+
 	MCPServers []MCPServer `yaml:"mcp_servers"`
 
 	// Permissions overrides the default tool permission policy per tool
@@ -88,6 +93,18 @@ type MCPServer struct {
 	Name    string   `yaml:"name"`
 	Command string   `yaml:"command"`
 	Args    []string `yaml:"args"`
+}
+
+// ConnectSection is tenzing.yaml's connect: block — the control-plane
+// dial-out contract (see docs/adrs/2026-09-12-control-plane-fleet/PROTOCOL.md).
+// URL is the plane's ws:// or wss:// endpoint; setting it in the file puts
+// the process in connect mode (like the --connect flag). Token is the bearer
+// token on the upgrade request. Backoff is the reconnect delay base
+// (doubles to a 30s cap); omit for the 1s default.
+type ConnectSection struct {
+	URL     string    `yaml:"url"`
+	Token   string    `yaml:"token"`
+	Backoff *Duration `yaml:"backoff"`
 }
 
 // ProviderTypes are the wire protocols a provider can speak — the three
