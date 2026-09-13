@@ -19,8 +19,10 @@ const gatePromptFragment = "## Advisor\n\n" +
 	"Call `advisor` before substantive work — before writing, editing, or committing " +
 	"to an approach. Orientation first (finding files, reading what's there) is fine " +
 	"and encouraged; then consult. Also call it when stuck (recurring errors, an " +
-	"approach that isn't converging) and once before declaring a non-trivial task " +
-	"done. Give the advice serious weight; if your evidence contradicts it, surface the " +
+	"approach that isn't converging), when torn between approaches — consult rather " +
+	"than deliberating at length on your own — and once before declaring a " +
+	"non-trivial task done. Give the advice serious weight; if your evidence " +
+	"contradicts it, surface the " +
 	"conflict in one more advisor call rather than silently switching. The advisor may " +
 	"name a milestone to check back at; honor it.\n\n" +
 	"Hard rules (enforced):\n" +

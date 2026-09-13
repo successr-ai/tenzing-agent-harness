@@ -349,10 +349,15 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	if o.agentBuilder != nil {
 		mainAgent, err = o.agentBuilder(mainLLM, mainSystemPrompt)
 	} else {
+		if def, ok := mainLLM.GetModel().(common.ModelDefinition); ok && o.thinkingBudget != nil && def.ReasoningEffort != "" {
+			slog.Warn("thinking_budget overrides reasoning_effort for the main model",
+				"model", def.Name, "reasoning_effort", def.ReasoningEffort)
+		}
 		mainAgent, err = agent.New(agent.AgentConfig{
 			Model:          mainLLM,
 			SystemPrompt:   mainSystemPrompt,
 			Think:          o.thinking,
+			ThinkingBudget: o.thinkingBudget,
 			RetryMax:       o.llmRetryMax,
 			RetryBaseDelay: o.llmRetryBaseDelay,
 			OnLLMRetry: func(attempt, maxRetries int, retryErr error, delay time.Duration) {

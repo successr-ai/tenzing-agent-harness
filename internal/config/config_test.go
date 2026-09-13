@@ -26,6 +26,7 @@ advisor_nudge: 3
 max_turn_tokens: 100000
 max_iterations: 50
 max_wall_clock: "10m"
+thinking_budget: 8192
 subagent_depth: 0
 approval_timeout: "90s"
 no_permissions: true
@@ -74,6 +75,9 @@ models:
 	}
 	if f.MaxWallClock.Value() != 10*time.Minute {
 		t.Errorf("max_wall_clock = %v, want 10m", f.MaxWallClock.Value())
+	}
+	if f.ThinkingBudget == nil || *f.ThinkingBudget != 8192 {
+		t.Errorf("thinking_budget: want 8192, got %v", f.ThinkingBudget)
 	}
 	if f.SubagentDepth == nil || *f.SubagentDepth != 0 {
 		t.Errorf("subagent_depth: want explicit 0, got %v", f.SubagentDepth)
@@ -125,7 +129,7 @@ func TestLoad_OmittedPointersStayNil(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Load: found=%v err=%v", found, err)
 	}
-	if f.SubagentDepth != nil || f.ApprovalTimeout != nil || f.Thinking != nil || f.Port != nil || f.MaxWallClock != nil {
+	if f.SubagentDepth != nil || f.ApprovalTimeout != nil || f.Thinking != nil || f.Port != nil || f.MaxWallClock != nil || f.ThinkingBudget != nil {
 		t.Errorf("omitted pointer fields not nil: %+v", f)
 	}
 }

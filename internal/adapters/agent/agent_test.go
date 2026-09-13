@@ -14,6 +14,7 @@ type mockLLM struct {
 	// syncResponse is returned by SendMessageWithTools.
 	syncResponse common.CompletionResponse
 	syncCalled   bool
+	syncReq      common.CompletionRequest
 
 	// streamEvents are sent to the channel by SendStreamingMessage.
 	streamEvents []common.StreamEvent
@@ -33,8 +34,9 @@ func (m *mockLLM) SendStreamingMessage(_ context.Context, _ common.CompletionReq
 	return nil
 }
 
-func (m *mockLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+func (m *mockLLM) SendMessageWithTools(_ context.Context, req common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
 	m.syncCalled = true
+	m.syncReq = req
 	return m.syncResponse, nil
 }
 

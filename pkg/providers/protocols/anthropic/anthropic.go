@@ -398,10 +398,9 @@ func (a *Client) buildParams(req common.CompletionRequest) (anthropicSDK.Message
 		params.Temperature = anthropicSDK.Float(*req.Temperature)
 	}
 
-	if req.ThinkingBudget != nil {
-		if req.Think == nil || !*req.Think {
-			return anthropicSDK.MessageNewParams{}, fmt.Errorf("anthropic: ThinkingBudget requires Think=true")
-		}
+	// A budget implies thinking is wanted (the API rejects budget_tokens
+	// without thinking enabled); an explicit Think=false leaves it inert.
+	if req.ThinkingBudget != nil && (req.Think == nil || *req.Think) {
 		// The API rejects budgets below 1024; clamp up rather than fail.
 		budget := max(*req.ThinkingBudget, 1024)
 		if budget >= maxTokens {

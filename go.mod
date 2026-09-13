@@ -4,6 +4,7 @@ go 1.25.9
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.56.0
+	github.com/coder/websocket v1.8.15
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/looplab/fsm v1.0.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -18,7 +19,6 @@ require (
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect

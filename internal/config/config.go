@@ -41,6 +41,10 @@ type File struct {
 	MaxTurnTokens int64     `yaml:"max_turn_tokens"`
 	MaxIterations int       `yaml:"max_iterations"`
 	MaxWallClock  *Duration `yaml:"max_wall_clock"`
+	// ThinkingBudget caps reasoning tokens per LLM call for the main agent
+	// (exact on Anthropic, tiered on OpenAI-compatible, think level on
+	// Ollama). Nil leaves the provider default.
+	ThinkingBudget *int64 `yaml:"thinking_budget"`
 
 	SubagentDepth   *int      `yaml:"subagent_depth"`
 	ApprovalTimeout *Duration `yaml:"approval_timeout"`

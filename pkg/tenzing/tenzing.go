@@ -184,6 +184,10 @@ var (
 	// Without this option the provider default applies.
 	WithThinking = harness.WithThinking
 
+	// WithThinkingBudget caps reasoning tokens per LLM call for the main
+	// agent (exact on Anthropic, tiered/level-mapped elsewhere).
+	WithThinkingBudget = harness.WithThinkingBudget
+
 	// WithLLMRetry tunes the default agent's transient-LLM-error retry
 	// policy: max attempts (negative disables) and the base backoff delay.
 	WithLLMRetry = harness.WithLLMRetry

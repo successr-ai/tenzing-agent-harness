@@ -69,6 +69,7 @@ func TestHarnessOptions(t *testing.T) {
 		{"bad mcp server", cliConfig{MCPServers: []string{"nope"}}, 0, true},
 		{"bad role model", cliConfig{SubagentModel: "bogus/nope"}, 0, true},
 		{"thinking set", cliConfig{Thinking: true, ThinkingSet: true}, 1, false},
+		{"thinking budget", cliConfig{ThinkingBudget: 8192}, 1, false},
 		{"no-session and no-context-files", cliConfig{NoSession: true, NoContextFiles: true}, 2, false},
 		{"resume adds conversation option", cliConfig{Resume: "abc123"}, 1, false},
 		{"resume and continue are exclusive", cliConfig{Resume: "abc", ContinueLatest: true}, 0, true},

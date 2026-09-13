@@ -385,6 +385,7 @@ func TestMergeConfigFile(t *testing.T) {
 	dur := func(d time.Duration) *cfgfile.Duration { c := cfgfile.Duration(d); return &c }
 	intp := func(i int) *int { return &i }
 	boolp := func(b bool) *bool { return &b }
+	int64p := func(i int64) *int64 { return &i }
 
 	t.Run("file fills unset fields", func(t *testing.T) {
 		cfg := &cliConfig{Port: 8080, NexusConfig: "nexus.yaml"}
@@ -395,6 +396,7 @@ func TestMergeConfigFile(t *testing.T) {
 			MaxTurnTokens:   500,
 			MaxIterations:   9,
 			MaxWallClock:    dur(10 * time.Minute),
+			ThinkingBudget:  int64p(8192),
 			SubagentDepth:   intp(0),
 			ApprovalTimeout: dur(90 * time.Second),
 			Thinking:        boolp(true),
@@ -411,6 +413,9 @@ func TestMergeConfigFile(t *testing.T) {
 		}
 		if cfg.MaxTurnTokens != 500 || cfg.MaxIterations != 9 || cfg.MaxWallClock != 10*time.Minute {
 			t.Errorf("budget fields not merged: %+v", cfg)
+		}
+		if cfg.ThinkingBudget != 8192 {
+			t.Errorf("thinking_budget not merged: %+v", cfg)
 		}
 		if cfg.SubagentDepth != 0 || !cfg.SubagentDepthSet {
 			t.Errorf("subagent_depth: got %d set=%v, want explicit 0", cfg.SubagentDepth, cfg.SubagentDepthSet)
@@ -433,12 +438,15 @@ func TestMergeConfigFile(t *testing.T) {
 	})
 
 	t.Run("changed flag beats file", func(t *testing.T) {
-		cfg := &cliConfig{AdvisorModel: "ollama/flag", Port: 7777}
-		mergeConfigFile(cfg, cfgfile.File{AdvisorModel: "ollama/file", Port: intp(9090)},
-			func(name string) bool { return name == "advisor-model" || name == "port" },
+		cfg := &cliConfig{AdvisorModel: "ollama/flag", Port: 7777, ThinkingBudget: 2048}
+		mergeConfigFile(cfg, cfgfile.File{AdvisorModel: "ollama/file", Port: intp(9090), ThinkingBudget: int64p(8192)},
+			func(name string) bool { return name == "advisor-model" || name == "port" || name == "thinking-budget" },
 			presentNone)
 		if cfg.AdvisorModel != "ollama/flag" {
 			t.Errorf("flag lost to file: %q", cfg.AdvisorModel)
+		}
+		if cfg.ThinkingBudget != 2048 {
+			t.Errorf("thinking-budget flag lost to file: %d", cfg.ThinkingBudget)
 		}
 		if cfg.Port != 7777 {
 			t.Errorf("port flag lost to file: %d", cfg.Port)

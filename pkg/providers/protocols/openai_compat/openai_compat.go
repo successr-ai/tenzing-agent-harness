@@ -117,8 +117,8 @@ func WithExtraField(path string, value any) ClientOption {
 	}
 }
 
-// WithReasoningEffort sets reasoning_effort on every request, overriding
-// the tier a request's ThinkingBudget would otherwise imply. The value is
+// WithReasoningEffort sets reasoning_effort on every request that carries
+// no ThinkingBudget (a request budget's tier wins). The value is
 // sent verbatim — the provider owns the valid set.
 func WithReasoningEffort(effort string) ClientOption {
 	return func(o *clientOptions) {
@@ -149,7 +149,7 @@ type Client struct {
 	// deprecated max_tokens, required by newer OpenAI models.
 	UseMaxCompletionTokens bool
 	// ReasoningEffort, when non-empty, sets reasoning_effort on every
-	// request in place of the ThinkingBudget-derived tier.
+	// request without a ThinkingBudget (the budget-derived tier wins).
 	ReasoningEffort string
 }
 
@@ -428,11 +428,13 @@ func (c *Client) buildParams(req common.CompletionRequest) (openai.ChatCompletio
 		params.Temperature = param.NewOpt(*req.Temperature)
 	}
 
+	// A request budget is the more specific intent: it beats the client's
+	// configured reasoning_effort (mirrors ollama's think level precedence).
 	switch {
-	case c.ReasoningEffort != "":
-		params.ReasoningEffort = openai.ReasoningEffort(c.ReasoningEffort)
 	case req.ThinkingBudget != nil:
 		params.ReasoningEffort = reasoningEffortForBudget(*req.ThinkingBudget)
+	case c.ReasoningEffort != "":
+		params.ReasoningEffort = openai.ReasoningEffort(c.ReasoningEffort)
 	}
 
 	if len(req.Tools) > 0 {

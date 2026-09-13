@@ -38,6 +38,8 @@ type Agent struct {
 	// think toggles model reasoning per request; nil leaves it to the
 	// provider default.
 	think *bool
+	// thinkingBudget caps reasoning tokens per request; nil = provider default.
+	thinkingBudget *int64
 
 	// Transient-error retry policy for LLM calls. retryMax 0 disables.
 	retryMax   int
@@ -50,6 +52,9 @@ type AgentConfig struct {
 	SystemPrompt string
 	// Think toggles model reasoning; nil leaves the provider default.
 	Think *bool
+	// ThinkingBudget caps reasoning tokens per request; nil leaves the
+	// provider default. Clamped below the request MaxTokens at construction.
+	ThinkingBudget *int64
 	// RetryMax bounds transient-LLM-error retries: 0 means the default (3),
 	// negative disables retries. RetryBaseDelay 0 means the default (2s).
 	RetryMax       int
@@ -93,13 +98,23 @@ func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
 		retryBase = defaultRetryBaseDelay
 	}
 
+	budget := cfg.ThinkingBudget
+	if budget != nil && *budget >= maxTokensStdResponse {
+		// Anthropic requires budget_tokens < max_tokens; keep it satisfiable.
+		clamped := maxTokensStdResponse - 1024
+		slog.Warn("thinking budget clamped below the per-request max tokens",
+			"budget", *budget, "max_tokens", maxTokensStdResponse, "clamped", clamped)
+		budget = &clamped
+	}
+
 	return &Agent{
-		model:        cfg.Model,
-		systemPrompt: cfg.SystemPrompt,
-		think:        cfg.Think,
-		retryMax:     retryMax,
-		retryBase:    retryBase,
-		onLLMRetry:   cfg.OnLLMRetry,
+		model:          cfg.Model,
+		systemPrompt:   cfg.SystemPrompt,
+		think:          cfg.Think,
+		thinkingBudget: budget,
+		retryMax:       retryMax,
+		retryBase:      retryBase,
+		onLLMRetry:     cfg.OnLLMRetry,
 	}, nil
 }
 
@@ -240,12 +255,13 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	// create LLM request
 	model := a.model.GetCurrentModel()
 	req := common.CompletionRequest{
-		Model:     model,
-		System:    system,
-		Messages:  messages,
-		MaxTokens: maxTokensStdResponse,
-		Tools:     tools,
-		Think:     a.think,
+		Model:          model,
+		System:         system,
+		Messages:       messages,
+		MaxTokens:      maxTokensStdResponse,
+		Tools:          tools,
+		Think:          a.think,
+		ThinkingBudget: a.thinkingBudget,
 		// Prompt caching: Anthropic honors it (cache_control breakpoints on
 		// system prompt + tools), other providers ignore it.
 		CacheSystemAndTools: true,

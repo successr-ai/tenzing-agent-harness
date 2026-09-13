@@ -35,6 +35,8 @@ type cliConfig struct {
 	MaxTurnTokens int64
 	MaxIterations int
 	MaxWallClock  time.Duration
+	// ThinkingBudget caps reasoning tokens per LLM call; 0 = unset.
+	ThinkingBudget int64
 
 	// toggles
 	SubagentDepth      int
@@ -176,6 +178,9 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	}
 	if cfg.ThinkingSet {
 		opts = append(opts, harness.WithThinking(cfg.Thinking))
+	}
+	if cfg.ThinkingBudget > 0 {
+		opts = append(opts, harness.WithThinkingBudget(cfg.ThinkingBudget))
 	}
 	if cfg.NoSession {
 		opts = append(opts, harness.WithSessionDisabled())

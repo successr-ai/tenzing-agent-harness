@@ -204,11 +204,13 @@ type CompletionRequest struct {
 	// models without thinking support); explicit false disables it. Providers
 	// without a native switch ignore the field.
 	Think *bool
-	// ThinkingBudget is the reasoning token budget, honored alongside Think.
-	// Anthropic: extended-thinking budget_tokens (requires Think=true; minimum
-	// 1024, values below are clamped up). OpenAI: mapped lossily to
-	// reasoning_effort (<4096 → low, <16384 → medium, else high). Ollama and
-	// others ignore it.
+	// ThinkingBudget is the reasoning token budget, honored alongside Think:
+	// a budget implies thinking unless Think is explicitly false, which
+	// leaves it inert. Anthropic: extended-thinking budget_tokens (minimum
+	// 1024, values below are clamped up; must be < MaxTokens). OpenAI: mapped
+	// lossily to reasoning_effort (<4096 → low, <16384 → medium, else high).
+	// Ollama: mapped to a think level with the same cutoffs. A budget beats a
+	// client's configured reasoning effort.
 	ThinkingBudget *int64
 	// CacheSystemAndTools asks the provider to cache the system prompt and tool
 	// definitions across calls. Anthropic honors it (cache_control ephemeral

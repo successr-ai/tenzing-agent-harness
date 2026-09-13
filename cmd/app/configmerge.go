@@ -123,6 +123,9 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	if f.MaxWallClock != nil && !changed("max-wall-clock") {
 		cfg.MaxWallClock = f.MaxWallClock.Value()
 	}
+	if f.ThinkingBudget != nil && !changed("thinking-budget") {
+		cfg.ThinkingBudget = *f.ThinkingBudget
+	}
 
 	// Pointer fields: the file distinguishes "set to zero" from "omitted",
 	// and setting them must also set the *Set marker or harnessOptions

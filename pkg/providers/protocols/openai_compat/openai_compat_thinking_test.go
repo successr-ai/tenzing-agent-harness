@@ -65,7 +65,10 @@ func TestOpenAICompat_ThinkingBudgetMapsToReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestOpenAICompat_ReasoningEffortOverridesBudget(t *testing.T) {
+// TestOpenAICompat_BudgetOverridesReasoningEffort pins the precedence: a
+// request ThinkingBudget's tier beats the client's configured effort; the
+// configured effort applies only to requests without a budget.
+func TestOpenAICompat_BudgetOverridesReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name       string
 		effort     string
@@ -73,7 +76,7 @@ func TestOpenAICompat_ReasoningEffortOverridesBudget(t *testing.T) {
 		wantEffort string
 	}{
 		{"configured effort with no budget", "low", nil, "low"},
-		{"configured effort beats the budget tier", "max", int64Ptr(100000), "max"},
+		{"budget tier beats the configured effort", "max", int64Ptr(100000), "high"},
 		{"empty effort falls back to the budget tier", "", int64Ptr(1024), "low"},
 	}
 

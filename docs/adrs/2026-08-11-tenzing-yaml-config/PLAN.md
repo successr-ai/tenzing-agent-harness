@@ -50,6 +50,7 @@ advisor_nudge: 0
 max_tokens: 0                          # per-turn budgets
 max_iterations: 0
 max_wall_clock: "0s"                   # Go duration string
+thinking_budget: 0                     # reasoning tokens per LLM call, 0 = provider default
 
 subagent_depth: 1
 approval_timeout: "120s"

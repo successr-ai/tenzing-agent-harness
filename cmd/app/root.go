@@ -173,6 +173,7 @@ func newRootCmd() *cobra.Command {
 	fl.BoolVar(&cfg.SkipPermissions, "dangerously-skip-permissions", false, "auto-approve all approval prompts (sandboxes/pipelines)")
 	fl.BoolVar(&cfg.ReadOnly, "read-only", false, "deny tools not marked read-only, no approval prompts")
 	fl.BoolVar(&cfg.Thinking, "thinking", false, "model reasoning on or off (default: provider default)")
+	fl.Int64Var(&cfg.ThinkingBudget, "thinking-budget", 0, "cap reasoning tokens per LLM call (exact on Anthropic, tiered/level-mapped on OpenAI-compatible and Ollama; 0 = provider default; --max-wall-clock guards the whole turn)")
 	fl.BoolVar(&cfg.NoSession, "no-session", false, "disable session persistence for this run")
 	fl.BoolVar(&cfg.NoContextFiles, "no-context-files", false, "skip AGENTS.md context-file loading")
 

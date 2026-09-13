@@ -119,6 +119,10 @@ type harnessOptions struct {
 	// provider default.
 	thinking *bool
 
+	// thinkingBudget caps reasoning tokens per main-agent LLM call; nil
+	// leaves the provider default.
+	thinkingBudget *int64
+
 	// llmRetryMax / llmRetryBaseDelay tune the default agent's transient-
 	// error retry policy. Zero values keep the agent defaults (3 / 2s);
 	// negative llmRetryMax disables retries.
@@ -435,6 +439,19 @@ func WithSessionDisabled() HarnessOption {
 // Without this option the provider default applies.
 func WithThinking(enabled bool) HarnessOption {
 	return func(o *harnessOptions) { o.thinking = &enabled }
+}
+
+// WithThinkingBudget caps reasoning tokens per LLM call for the main agent.
+// Exact on Anthropic (budget_tokens), tiered to reasoning_effort on
+// OpenAI-compatible providers, mapped to a think level on Ollama. It wins over
+// a model entry's reasoning_effort; an explicit WithThinking(false) leaves it
+// inert. Values below 1 are ignored.
+func WithThinkingBudget(tokens int64) HarnessOption {
+	return func(o *harnessOptions) {
+		if tokens > 0 {
+			o.thinkingBudget = &tokens
+		}
+	}
 }
 
 // WithLLMRetry tunes the default agent's transient-LLM-error retry policy:

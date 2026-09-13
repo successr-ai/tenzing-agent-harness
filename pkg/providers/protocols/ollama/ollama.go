@@ -546,13 +546,31 @@ func readErrorBody(r io.Reader) string {
 
 func boolPtr(v bool) *bool { return &v }
 
-// think resolves the request's think field. A configured reasoning effort
-// replaces the boolean with Ollama's level string, except when the request
-// explicitly disables thinking — an explicit off beats a configured level.
-// nil (no preference, no effort) omits the field.
+// thinkLevelForBudget maps a token budget onto Ollama's think levels. Lossy
+// by design; the cutoffs mirror openai_compat's reasoningEffortForBudget so
+// the two lossy providers agree.
+func thinkLevelForBudget(budget int64) string {
+	switch {
+	case budget < 4096:
+		return "low"
+	case budget < 16384:
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+// think resolves the request's think field. A request ThinkingBudget maps
+// to Ollama's level string (same cutoffs as openai_compat's tiers), else a
+// configured reasoning effort replaces the boolean — except when the request
+// explicitly disables thinking, which beats both. nil (no preference, no
+// budget, no effort) omits the field.
 func (o *Client) think(req common.CompletionRequest) any {
 	if req.Think != nil && !*req.Think {
 		return false
+	}
+	if req.ThinkingBudget != nil {
+		return thinkLevelForBudget(*req.ThinkingBudget)
 	}
 	if o.reasoningEffort != "" {
 		return o.reasoningEffort
