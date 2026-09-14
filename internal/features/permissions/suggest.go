@@ -33,10 +33,14 @@ var flagSensitiveTools = map[string]bool{"sed": true}
 // read-only, not category-allowed. Chained commands therefore converge one
 // rule per approval instead of demanding the whole chain up front.
 //
+// A write through a redirect gets a glob that spells the redirect, scoped
+// to the target's directory (`cat *>/tmp/*`) — a binary glob alone never
+// covers a redirect (snapshot.covered). A tee gets its exact command line,
+// since a `tee *` glob would allowlist writing anywhere.
+//
 // glob is empty when no rule is proposed, and reason then says why — the
-// command would not prompt at all, or the segment writes a file through a
-// redirect or tee and should be approved case by case rather than
-// allowlisted (a glob for the binary would cover the write too).
+// command would not prompt at all, the write goes to a path only known at
+// runtime, or the command word is not static.
 func (r *BashRules) Suggest(command string) (glob, reason string) {
 	a := r.Analyze(command)
 	if a.Err != nil {
@@ -47,8 +51,14 @@ func (r *BashRules) Suggest(command string) (glob, reason string) {
 		if s.covered(seg) {
 			continue
 		}
-		if writesViaRedirect(seg) || isTee(seg) {
-			return "", "writes a file — approve case by case"
+		if writesViaRedirect(seg) {
+			if g := redirectGlob(seg); g != "" {
+				return g, ""
+			}
+			return "", "writes to a non-literal path — approve case by case"
+		}
+		if isTee(seg) {
+			return seg.Text, ""
 		}
 		if g := globFor(seg); g != "" {
 			return g, ""
@@ -56,6 +66,38 @@ func (r *BashRules) Suggest(command string) (glob, reason string) {
 		return "", "command is not statically analysable — approve case by case"
 	}
 	return "", "already covered by the allow list"
+}
+
+// redirectGlob builds the glob for a segment whose write is a redirect:
+// the binary, any arguments, then the redirect operator and the target's
+// directory — `cat *>/tmp/*` for `cat >/tmp/x.go <<EOF…`, `sort *>>out.txt*`
+// for a bare filename. Segment text prints the operator flush against its
+// target (`>out.txt`), which is what the glob spells. The trailing `*`
+// absorbs a here-doc body or further redirects. Empty when the target is
+// not a literal path or the command word is not static.
+//
+// ponytail: a bare filename yields `>>out.txt*`, which also covers
+// `out.txt.bak`; scope by exact name if that ever matters.
+func redirectGlob(seg shell.Segment) string {
+	if len(seg.Argv) == 0 || !seg.Argv[0].Static {
+		return ""
+	}
+	for _, w := range seg.Why {
+		rest, ok := strings.CutPrefix(w, "redirect ")
+		if !ok {
+			continue
+		}
+		op, target, ok := strings.Cut(rest, " ")
+		if !ok || strings.HasPrefix(target, "to non-literal") {
+			continue
+		}
+		dir := target
+		if i := strings.LastIndex(target, "/"); i >= 0 {
+			dir = target[:i+1]
+		}
+		return seg.Argv[0].Value + " *" + op + dir + "*"
+	}
+	return ""
 }
 
 // writesViaRedirect reports whether the segment's write comes from a

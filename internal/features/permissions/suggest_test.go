@@ -43,22 +43,28 @@ func TestSuggest(t *testing.T) {
 			"go install *", "",
 		},
 		{
-			"file write suggests nothing",
+			"file write scopes the glob to the target directory",
 			nil,
 			"grep -rn ErrConflict . > /tmp/hits.txt",
-			"", "writes a file — approve case by case",
+			"grep *>/tmp/*", "",
 		},
 		{
-			"append write suggests nothing",
+			"append to a bare filename spells the file",
 			[]string{"grep *"},
 			"grep -n x f | sort >> out.txt",
-			"", "writes a file — approve case by case",
+			"sort *>>out.txt*", "",
 		},
 		{
-			"tee suggests nothing",
+			"tee suggests its exact command",
 			[]string{"go build *"},
 			"go build ./... | tee build.log",
-			"", "writes a file — approve case by case",
+			"tee build.log", "",
+		},
+		{
+			"non-literal redirect target suggests nothing",
+			nil,
+			"echo x > $OUT",
+			"", "writes to a non-literal path — approve case by case",
 		},
 		{
 			"binary write is suggestable",
@@ -82,10 +88,10 @@ func TestSuggest(t *testing.T) {
 		},
 		{"nested shell", nil, `bash -c "./x.sh"`, "./x.sh *", ""},
 		{
-			"binary glob leaves the redirect write to a human",
+			"heredoc write under a binary glob still gets a redirect glob",
 			[]string{"cat *"},
-			"cat > f <<'EOF'\nbody\nEOF",
-			"", "writes a file — approve case by case",
+			"cat > /tmp/x.go <<'EOF'\nbody\nEOF",
+			"cat *>/tmp/*", "",
 		},
 		{"parse error", nil, "ls 'x", "", "could not parse command — approve case by case"},
 		{"non-literal command word", nil, "$CMD x", "", "command is not statically analysable — approve case by case"},
@@ -125,6 +131,34 @@ func TestSuggestConverges(t *testing.T) {
 	}
 	if want := []string{"./gen.sh *", "sudo rm *"}; !slices.Equal(globs, want) {
 		t.Errorf("converged on %q, want %q", globs, want)
+	}
+}
+
+// A redirect suggestion must cover the segment it was derived from,
+// here-doc body included, and stop at its directory.
+func TestSuggestRedirectConverges(t *testing.T) {
+	const cmd = "cat > /tmp/x.go <<'EOF'\npackage main\nEOF\ngo test ./... | tee /tmp/out.log"
+	r := NewBashRules(nil, nil)
+	var globs []string
+	for range 5 {
+		glob, reason := r.Suggest(cmd)
+		if glob == "" {
+			if reason != "already covered by the allow list" {
+				t.Fatalf("stopped early: %q", reason)
+			}
+			break
+		}
+		globs = append(globs, glob)
+		r.AllowPattern(glob)
+	}
+	if want := []string{"cat *>/tmp/*", "tee /tmp/out.log"}; !slices.Equal(globs, want) {
+		t.Fatalf("converged on %q, want %q", globs, want)
+	}
+	if d, _, ok := r.Verdict(cmd); !ok || d != core.Allow {
+		t.Errorf("after %v the command still prompts (decision %v, ok %v)", globs, d, ok)
+	}
+	if d, _, _ := r.Verdict("cat > /etc/hosts"); d == core.Allow {
+		t.Errorf("`cat *>/tmp/*` must not cover a write outside /tmp")
 	}
 }
 

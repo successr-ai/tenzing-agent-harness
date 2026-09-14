@@ -656,8 +656,9 @@ es.addEventListener('approval.requested', e => {
     }).then(r => r.ok ? r.json() : null).then(sg => {
       if (!sg || pattern.disabled) return; // answered already
       if (sg.glob) { pattern.value = sg.glob; return; }
-      // Nothing worth allowlisting (a file write, or already covered): say
-      // so rather than offering a glob that would grant more than it looks.
+      // Nothing worth allowlisting (a write to a runtime-only path, or
+      // already covered): say so rather than offering a glob that would
+      // grant more than it looks.
       pattern.value = '';
       pattern.placeholder = sg.reason || 'no glob suggested';
     }).catch(() => { /* advisory: the local suggestion stands */ });
