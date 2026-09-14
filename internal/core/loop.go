@@ -25,8 +25,8 @@ const maxParallelReadOnlyTools = 8
 
 // maxInvalidFinalRetries bounds how many times an invalid final answer (empty,
 // a tool call written as plain text, or a response truncated at the output
-// token limit) is bounced back to the model before the loop gives up and
-// returns it as-is.
+// token limit) is bounced back to the model before the loop gives up: a
+// non-empty answer is returned as-is, an empty one fails the turn.
 const maxInvalidFinalRetries = 2
 
 // toolCallTextRe matches text that is a malformed tool-call attempt emitted as
@@ -429,8 +429,11 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 				break
 			}
 			finalAnswer := reasoningResult.FinalAnswer
+			// max_tokens wins over the content checks: thinking can consume
+			// the whole output cap and leave an empty answer, and the model
+			// needs to hear "cut off", not "empty".
+			truncated := reasoningResult.Meta.StopReason == string(common.StopReasonMaxTokens)
 			reason := invalidFinalAnswerReason(finalAnswer)
-			truncated := reason == "" && reasoningResult.Meta.StopReason == string(common.StopReasonMaxTokens)
 			if truncated {
 				reason = "the response was cut off by the output token limit before it finished"
 			}
@@ -456,6 +459,13 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 					break
 				}
 				continue
+			}
+			if reason != "" && strings.TrimSpace(finalAnswer) == "" {
+				// Retries exhausted with nothing to show. An empty answer
+				// reported as success is invisible to the caller; an error
+				// reaches the UI.
+				loopErr = fmt.Errorf("model produced no output after %d retries: %s", invalidFinalRetries, reason)
+				break
 			}
 			if err := l.fsm.TransitionStates(ctx, LoopTransitionStop); err != nil {
 				return TurnResult{}, fmt.Errorf("fsm stop: %w", err)

@@ -401,6 +401,8 @@ func TestRunTurnInvalidFinalRetry(t *testing.T) {
 		steps      []ReasoningResult
 		wantAnswer string
 		wantCalls  int
+		wantErr    string // substring of the returned error; "" = success
+		wantRetry  string // substring of the first retry message appended
 	}{
 		{
 			name: "empty then valid",
@@ -440,14 +442,37 @@ func TestRunTurnInvalidFinalRetry(t *testing.T) {
 			wantCalls:  2,
 		},
 		{
-			name: "gives up after max retries",
+			// Thinking ate the whole output cap: no text, stop_reason
+			// max_tokens. The model must be told it was cut off, not that
+			// it forgot to call a tool.
+			name: "thinking-only truncation then valid",
 			steps: []ReasoningResult{
-				{FinalAnswer: ""},
-				{FinalAnswer: ""},
-				{FinalAnswer: ""},
+				{FinalAnswer: "", Meta: ResponseMeta{StopReason: "max_tokens"}},
+				{FinalAnswer: "real answer", Meta: ResponseMeta{StopReason: "end_turn"}},
 			},
-			wantAnswer: "",
+			wantAnswer: "real answer",
+			wantCalls:  2,
+			wantRetry:  "cut off by the output token limit",
+		},
+		{
+			name: "gives up with pseudo tool call, returns it as-is",
+			steps: []ReasoningResult{
+				{FinalAnswer: "call:graph_cypher{a}"},
+				{FinalAnswer: "call:graph_cypher{b}"},
+				{FinalAnswer: "call:graph_cypher{c}"},
+			},
+			wantAnswer: "call:graph_cypher{c}",
 			wantCalls:  1 + maxInvalidFinalRetries,
+		},
+		{
+			name: "gives up empty, fails the turn",
+			steps: []ReasoningResult{
+				{FinalAnswer: "", Meta: ResponseMeta{StopReason: "max_tokens"}},
+				{FinalAnswer: "", Meta: ResponseMeta{StopReason: "max_tokens"}},
+				{FinalAnswer: "", Meta: ResponseMeta{StopReason: "max_tokens"}},
+			},
+			wantCalls: 1 + maxInvalidFinalRetries,
+			wantErr:   "no output after 2 retries: the response was cut off",
 		},
 	}
 
@@ -459,7 +484,11 @@ func TestRunTurnInvalidFinalRetry(t *testing.T) {
 
 			l := newTestLoop(t, model, tools, fctx)
 			tr, err := l.RunTurn(context.Background(), "test query")
-			if err != nil {
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want substring %q", err, tt.wantErr)
+				}
+			} else if err != nil {
 				t.Fatal(err)
 			}
 			if tr.FinalAnswer != tt.wantAnswer {
@@ -467,6 +496,15 @@ func TestRunTurnInvalidFinalRetry(t *testing.T) {
 			}
 			if model.calls() != tt.wantCalls {
 				t.Errorf("model calls = %d, want %d", model.calls(), tt.wantCalls)
+			}
+			if tt.wantRetry != "" {
+				// msgs: user query, assistant, retry user message, ...
+				fctx.mu.Lock()
+				retry := fctx.msgs[2]
+				fctx.mu.Unlock()
+				if got := retry.Content[0].Text; !strings.Contains(got, tt.wantRetry) {
+					t.Errorf("retry message = %q, want substring %q", got, tt.wantRetry)
+				}
 			}
 		})
 	}

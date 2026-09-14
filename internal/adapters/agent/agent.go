@@ -17,8 +17,16 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
-// maxTokensStdResponse caps output tokens per LLM request.
-const maxTokensStdResponse int64 = 32768
+// maxTokensStdResponse caps output tokens per LLM request when no thinking
+// budget is set. With a budget the cap grows to budget+thinkingHeadroom
+// (bounded by the model's max output) so reasoning cannot swallow the whole
+// response: Anthropic treats budget_tokens as a target the model may exceed,
+// so a thin margin yields max_tokens responses with thinking blocks only.
+const (
+	maxTokensStdResponse int64 = 32768
+	thinkingHeadroom     int64 = 16384
+	minThinkingBudget    int64 = 1024
+)
 
 // Default transient-error retry policy for LLM calls.
 const (
@@ -40,6 +48,8 @@ type Agent struct {
 	think *bool
 	// thinkingBudget caps reasoning tokens per request; nil = provider default.
 	thinkingBudget *int64
+	// maxTokens is the per-request output cap; see maxTokensStdResponse.
+	maxTokens int64
 
 	// Transient-error retry policy for LLM calls. retryMax 0 disables.
 	retryMax   int
@@ -53,7 +63,9 @@ type AgentConfig struct {
 	// Think toggles model reasoning; nil leaves the provider default.
 	Think *bool
 	// ThinkingBudget caps reasoning tokens per request; nil leaves the
-	// provider default. Clamped below the request MaxTokens at construction.
+	// provider default. The request MaxTokens grows to leave thinkingHeadroom
+	// above it, bounded by the model's max output; the budget is clamped
+	// down only when that bound is hit.
 	ThinkingBudget *int64
 	// RetryMax bounds transient-LLM-error retries: 0 means the default (3),
 	// negative disables retries. RetryBaseDelay 0 means the default (2s).
@@ -98,24 +110,39 @@ func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
 		retryBase = defaultRetryBaseDelay
 	}
 
-	budget := cfg.ThinkingBudget
-	if budget != nil && *budget >= maxTokensStdResponse {
-		// Anthropic requires budget_tokens < max_tokens; keep it satisfiable.
-		clamped := maxTokensStdResponse - 1024
-		slog.Warn("thinking budget clamped below the per-request max tokens",
-			"budget", *budget, "max_tokens", maxTokensStdResponse, "clamped", clamped)
-		budget = &clamped
-	}
+	budget, maxTokens := sizeOutput(cfg.ThinkingBudget, int64(cfg.Model.GetModel().GetMaxTokens()))
 
 	return &Agent{
 		model:          cfg.Model,
 		systemPrompt:   cfg.SystemPrompt,
 		think:          cfg.Think,
 		thinkingBudget: budget,
+		maxTokens:      maxTokens,
 		retryMax:       retryMax,
 		retryBase:      retryBase,
 		onLLMRetry:     cfg.OnLLMRetry,
 	}, nil
+}
+
+// sizeOutput picks the request max_tokens for a thinking budget and clamps
+// the budget when the model's max output (0 = unknown) cannot fit it plus
+// thinkingHeadroom. Anthropic requires budget_tokens < max_tokens.
+func sizeOutput(budget *int64, modelMax int64) (*int64, int64) {
+	maxTokens := maxTokensStdResponse
+	if budget == nil {
+		return nil, maxTokens
+	}
+	maxTokens = max(maxTokens, *budget+thinkingHeadroom)
+	if modelMax > 0 && maxTokens > modelMax {
+		maxTokens = modelMax
+	}
+	if *budget+thinkingHeadroom <= maxTokens {
+		return budget, maxTokens
+	}
+	clamped := max(maxTokens-thinkingHeadroom, minThinkingBudget)
+	slog.Warn("thinking budget clamped to leave output headroom below the model's max tokens",
+		"budget", *budget, "max_tokens", maxTokens, "clamped", clamped)
+	return &clamped, maxTokens
 }
 
 func (a *Agent) GetCurrentModel() string {
@@ -258,7 +285,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 		Model:          model,
 		System:         system,
 		Messages:       messages,
-		MaxTokens:      maxTokensStdResponse,
+		MaxTokens:      a.maxTokens,
 		Tools:          tools,
 		Think:          a.think,
 		ThinkingBudget: a.thinkingBudget,

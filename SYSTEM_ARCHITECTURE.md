@@ -353,9 +353,13 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
    f. FinishReasoning
    g. If ToolCalls is empty (final answer):
       - context.AppendAssistant(ctx, reasoningResult.Meta.AssistantMessage)
-      - if the answer is empty, looks like a tool call written as plain text, or
-        was truncated at the output token limit, and fewer than 2 retries have
-        been used: context.AppendUser(ctx, a retry instruction) → loop to 4a
+      - if the response was truncated at the output token limit (checked first,
+        so thinking that consumed the whole cap reads as "cut off", not
+        "empty"), or the answer is empty or looks like a tool call written as
+        plain text, and fewer than 2 retries have been used:
+        context.AppendUser(ctx, a retry instruction) → loop to 4a
+      - if retries are exhausted and the answer is still empty: fail the turn
+        (error, not an empty TurnCompleted)
       - else: Stop, extensions.RunAfterTurn(ctx, &tr) (degrading), return
         TurnResult{FinalAnswer, Iterations, Duration}
    h. Else (tool calls present) — batch semantics:

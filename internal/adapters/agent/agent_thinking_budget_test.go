@@ -9,15 +9,19 @@ import (
 
 func TestDoReasoning_ThinkingBudgetOnRequest(t *testing.T) {
 	int64Ptr := func(v int64) *int64 { return &v }
+	// mockLLM reports no model max output, so the budget always rides
+	// through and max_tokens grows to keep thinkingHeadroom above it.
+	// Clamping against a known model max is covered by TestSizeOutput.
 	tests := []struct {
-		name   string
-		budget *int64
-		want   *int64
+		name    string
+		budget  *int64
+		want    *int64
+		wantMax int64
 	}{
-		{"unset stays nil", nil, nil},
-		{"set rides on the request", int64Ptr(8192), int64Ptr(8192)},
-		{"at max tokens clamps below it", int64Ptr(maxTokensStdResponse), int64Ptr(maxTokensStdResponse - 1024)},
-		{"above max tokens clamps below it", int64Ptr(100000), int64Ptr(maxTokensStdResponse - 1024)},
+		{"unset stays nil", nil, nil, maxTokensStdResponse},
+		{"set rides on the request", int64Ptr(8192), int64Ptr(8192), maxTokensStdResponse},
+		{"at default cap grows max tokens", int64Ptr(maxTokensStdResponse), int64Ptr(maxTokensStdResponse), maxTokensStdResponse + thinkingHeadroom},
+		{"above default cap grows max tokens", int64Ptr(100000), int64Ptr(100000), 100000 + thinkingHeadroom},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,6 +35,9 @@ func TestDoReasoning_ThinkingBudgetOnRequest(t *testing.T) {
 			}
 			if _, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("hi")}, nil, nil); err != nil {
 				t.Fatalf("DoReasoning: %v", err)
+			}
+			if mock.syncReq.MaxTokens != tt.wantMax {
+				t.Errorf("MaxTokens = %d, want %d", mock.syncReq.MaxTokens, tt.wantMax)
 			}
 			got := mock.syncReq.ThinkingBudget
 			switch {

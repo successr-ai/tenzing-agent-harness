@@ -293,3 +293,35 @@ func (m *recordingLLM) GetContextWindowSize() int                               
 func (m *recordingLLM) GetModel() common.Model {
 	return common.ModelDefinition{Name: "recording-model", ContextWindowSize: 128000, SupportsVision: true}
 }
+
+func TestSizeOutput(t *testing.T) {
+	p := func(v int64) *int64 { return &v }
+	tests := []struct {
+		name          string
+		budget        *int64
+		modelMax      int64
+		wantBudget    int64 // -1 = nil
+		wantMaxTokens int64
+	}{
+		{"no budget", nil, 128_000, -1, maxTokensStdResponse},
+		{"small budget keeps default cap", p(8000), 128_000, 8000, maxTokensStdResponse},
+		{"budget near default cap grows it", p(30_000), 128_000, 30_000, 30_000 + thinkingHeadroom},
+		{"unknown model max never clamps", p(200_000), 0, 200_000, 200_000 + thinkingHeadroom},
+		{"model max caps and clamps budget", p(200_000), 128_000, 128_000 - thinkingHeadroom, 128_000},
+		{"tiny model max floors budget", p(8000), 4096, minThinkingBudget, 4096},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, maxTokens := sizeOutput(tt.budget, tt.modelMax)
+			if maxTokens != tt.wantMaxTokens {
+				t.Errorf("maxTokens = %d, want %d", maxTokens, tt.wantMaxTokens)
+			}
+			switch {
+			case tt.wantBudget < 0 && budget != nil:
+				t.Errorf("budget = %d, want nil", *budget)
+			case tt.wantBudget >= 0 && (budget == nil || *budget != tt.wantBudget):
+				t.Errorf("budget = %v, want %d", budget, tt.wantBudget)
+			}
+		})
+	}
+}
