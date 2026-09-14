@@ -292,6 +292,14 @@ let statusNote = '';   // transient left-hand note (tool phase)
 let cwd = '';          // for shortening tool-call paths
 let conversationID = ''; // resume handle, shown in the status bar
 let home = '';
+
+// Input history: every submitted line (queries, commands, steers) in page
+// order; Up/Down in the composer walk it Claude Code-style. histIdx is -1
+// when not navigating; histDraft holds what was typed before the first Up
+// so the last Down restores it. Edits to a recalled entry are discarded.
+let history = [];
+let histIdx = -1;
+let histDraft = '';
 let visionOK = false;
 let pendingImages = []; // {media_type, data}
 
@@ -1068,9 +1076,41 @@ function acceptMenu(i) {
 queryEl.addEventListener('input', updateMenu);
 queryEl.addEventListener('blur', closeMenu);
 
+function pushHistory(q) {
+  if (history[history.length - 1] !== q) history.push(q);
+  histIdx = -1;
+}
+
+function setQuery(v) {
+  queryEl.value = v;
+  queryEl.selectionStart = queryEl.selectionEnd = v.length;
+  autosize();
+}
+
+// Up recalls only with the caret on the first line, Down only on the last,
+// so arrows still move between lines of a multi-line draft.
+function historyKey(key) {
+  const v = queryEl.value;
+  if (key === 'ArrowUp') {
+    if (!history.length || v.slice(0, queryEl.selectionStart).includes('\n')) return false;
+    if (histIdx === -1) { histDraft = v; histIdx = history.length; }
+    if (histIdx > 0) setQuery(history[--histIdx]);
+    return true;
+  }
+  if (key === 'ArrowDown') {
+    if (histIdx === -1 || v.slice(queryEl.selectionEnd).includes('\n')) return false;
+    histIdx++;
+    if (histIdx >= history.length) { histIdx = -1; setQuery(histDraft); }
+    else setQuery(history[histIdx]);
+    return true;
+  }
+  return false;
+}
+
 async function send() {
   const q = queryEl.value.trim();
   if (!q) return;
+  pushHistory(q);
   if (running) return steer(q);
 
   // Action commands never reach the agent. An unknown /name still does:
@@ -1180,6 +1220,10 @@ queryEl.addEventListener('keydown', e => {
       closeMenu();
       return;
     }
+  }
+  if (historyKey(e.key)) {
+    e.preventDefault();
+    return;
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
