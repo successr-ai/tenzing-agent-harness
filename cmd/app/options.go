@@ -30,6 +30,8 @@ type cliConfig struct {
 	BlackboardModel string
 	AdvisorModel    string
 	AdvisorNudge    int
+	AdvisorCadence  int // 0 = default (6), -1 = off
+	AdvisorMaxCalls int // 0 = default (30)
 
 	// budgets
 	MaxTurnTokens int64
@@ -146,13 +148,19 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	if err := roleLLM("--advisor-model", cfg.AdvisorModel, harness.WithAdvisorLLM); err != nil {
 		return nil, err
 	}
-	if cfg.AdvisorNudge > 0 {
-		if cfg.AdvisorModel == "" {
-			fmt.Fprintln(os.Stderr, "warning: --advisor-nudge requires --advisor-model; ignored")
-		} else {
-			opts = append(opts, harness.WithAdvisorNudge(cfg.AdvisorNudge))
+	advisorInt := func(flag string, v int, opt func(int) harness.HarnessOption) {
+		if v == 0 {
+			return
 		}
+		if cfg.AdvisorModel == "" {
+			fmt.Fprintf(os.Stderr, "warning: %s requires --advisor-model; ignored\n", flag)
+			return
+		}
+		opts = append(opts, opt(v))
 	}
+	advisorInt("--advisor-nudge", cfg.AdvisorNudge, harness.WithAdvisorNudge)
+	advisorInt("--advisor-cadence", cfg.AdvisorCadence, harness.WithAdvisorCadence)
+	advisorInt("--advisor-max-calls", cfg.AdvisorMaxCalls, harness.WithAdvisorMaxCalls)
 
 	if cfg.MaxTurnTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {
 		opts = append(opts, harness.WithBudgets(budgets.Limits{

@@ -114,6 +114,12 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	if f.AdvisorNudge != 0 && !changed("advisor-nudge") {
 		cfg.AdvisorNudge = f.AdvisorNudge
 	}
+	if f.AdvisorCadence != 0 && !changed("advisor-cadence") {
+		cfg.AdvisorCadence = f.AdvisorCadence
+	}
+	if f.AdvisorMaxCalls != 0 && !changed("advisor-max-calls") {
+		cfg.AdvisorMaxCalls = f.AdvisorMaxCalls
+	}
 	if f.MaxTurnTokens != 0 && !changed("max-turn-tokens") {
 		cfg.MaxTurnTokens = f.MaxTurnTokens
 	}

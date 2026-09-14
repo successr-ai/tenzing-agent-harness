@@ -35,6 +35,11 @@ type File struct {
 	// AdvisorModel enables the advisor tool and its write-gate when set.
 	AdvisorModel string `yaml:"advisor_model"`
 	AdvisorNudge int    `yaml:"advisor_nudge"`
+	// AdvisorCadence is the max loop iterations between advisor consults
+	// before every tool is blocked; 0 = default (6), -1 = off.
+	AdvisorCadence int `yaml:"advisor_cadence"`
+	// AdvisorMaxCalls caps advisor consults per turn; 0 = default (30).
+	AdvisorMaxCalls int `yaml:"advisor_max_calls"`
 
 	// MaxTurnTokens bounds input+output cumulatively for one turn; a
 	// model entry's MaxResponseTokens bounds a single response instead.
@@ -313,6 +318,12 @@ func (f File) validate() error {
 
 	if f.AdvisorNudge < 0 {
 		return fmt.Errorf("advisor_nudge must be >= 0, got %d", f.AdvisorNudge)
+	}
+	if f.AdvisorCadence < -1 {
+		return fmt.Errorf("advisor_cadence must be >= -1 (-1 = off), got %d", f.AdvisorCadence)
+	}
+	if f.AdvisorMaxCalls < 0 {
+		return fmt.Errorf("advisor_max_calls must be >= 0, got %d", f.AdvisorMaxCalls)
 	}
 	return nil
 }

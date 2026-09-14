@@ -10,10 +10,20 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 )
 
-// maxAdvisorCallsPerTurn bounds consults per turn so a looping executor
-// cannot burn advisor tokens indefinitely. Sized for the plan-checkpoint
-// rule: one consult per plan write plus one per task marked done.
-const maxAdvisorCallsPerTurn = 20
+// Gate defaults, used when GateConfig leaves the field zero.
+const (
+	// DefaultMaxCallsPerTurn bounds consults per turn so a looping executor
+	// cannot burn advisor tokens indefinitely. Sized for the plan-checkpoint
+	// rule plus a cadence consult every DefaultCadence iterations on a long
+	// turn.
+	DefaultMaxCallsPerTurn = 30
+
+	// DefaultCadence is the number of loop iterations the executor may run
+	// without consulting before the gate blocks every tool until it does.
+	// Catches an executor oscillating between hypotheses on its own — the
+	// gate is otherwise silent after the turn's first consult.
+	DefaultCadence = 6
+)
 
 const gatePromptFragment = "## Advisor\n\n" +
 	"Call `advisor` before substantive work — before writing, editing, or committing " +
@@ -25,6 +35,9 @@ const gatePromptFragment = "## Advisor\n\n" +
 	"contradicts it, surface the " +
 	"conflict in one more advisor call rather than silently switching. The advisor may " +
 	"name a milestone to check back at; honor it.\n\n" +
+	"If you reverse a decision you made earlier this turn (\"actually\", \"wait\", " +
+	"\"I had it right the first time\"), stop reasoning: your next call is `advisor`, " +
+	"with both hypotheses in the `question`. Do not test a third variant first.\n\n" +
 	"Hard rules (enforced):\n" +
 	"- Your first state-changing tool call each turn must be preceded by an advisor call. " +
 	"Read-only orientation is always allowed first. This applies to one-line edits too.\n" +
@@ -32,9 +45,17 @@ const gatePromptFragment = "## Advisor\n\n" +
 	"require a fresh advisor call — one with no state-changing tool calls since. " +
 	"Consult, then write or change the plan; finish a task, consult, then mark it done."
 
+// cadenceRule is appended to gatePromptFragment when the cadence rule is on.
+const cadenceRule = "\n- Cadence: after %d loop iterations without a consult, every tool is " +
+	"blocked until you call `advisor`."
+
 const nudgeReminder = "You have not consulted the advisor yet. If the task has a " +
 	"non-obvious design decision or a failure mode you haven't ruled out, call " +
 	"advisor now before committing to an approach."
+
+const cadenceReminder = "You have gone several iterations without consulting the advisor. " +
+	"Your next tool call must be `advisor`. State what you believe, what contradicts it, " +
+	"and the decision you keep reversing."
 
 var (
 	_ core.Extension           = (*GateExt)(nil)
@@ -43,26 +64,45 @@ var (
 	_ core.PromptContributor   = (*GateExt)(nil)
 )
 
+// GateConfig configures GateExt. Zero values mean: no nudge, DefaultCadence,
+// DefaultMaxCallsPerTurn, no exempt tools. Cadence < 0 disables the cadence
+// rule.
+type GateConfig struct {
+	// NudgeIteration, when > 0, appends a reminder from that iteration
+	// onward on turns where the advisor has not been consulted (off by
+	// default — Anthropic measured nudging counterproductive on strong
+	// executor models).
+	NudgeIteration int
+	// Cadence is the max loop iterations between consults before every
+	// tool is blocked. 0 = DefaultCadence; < 0 disables.
+	Cadence int
+	// MaxCallsPerTurn caps consults per turn. 0 = DefaultMaxCallsPerTurn.
+	MaxCallsPerTurn int
+	// ExemptTools names tools that bypass the gate even unconsulted (e.g. a
+	// harness's forced single-shot answer tool, which has no orientation
+	// phase to precede it).
+	ExemptTools []string
+}
+
 // GateExt enforces the advisor "hard rules" on the main loop. Per turn, the
 // first state-changing tool call is denied until the advisor has been called.
 // Plan checkpoints (TodoWrite, TodoCreate, TodoUpdate to done) are denied
 // unless the advisor has been called since the last state-changing tool call,
 // so the advisor reviews at every plan change and task boundary. Todo tools
 // themselves never count as state-changing for that rule, so status flips
-// between checkpoints flow freely. Read-only tools flow freely; unknown tools
-// (no read-only marker, e.g. MCP) count as state-changing. Tools named via
-// WithAdvisorExemptTools also flow freely, unconsulted — for harnesses whose
-// first (and only) tool call is a forced/schema-only answer with no
-// orientation phase to hide behind.
+// between checkpoints flow freely. After Cadence iterations without a
+// consult every tool (read-only included) is denied until the advisor is
+// called, so an executor cannot oscillate indefinitely on its own; the rule
+// yields once the per-turn call cap is reached so it cannot deadlock.
+// Read-only tools otherwise flow freely; unknown tools (no read-only marker,
+// e.g. MCP) count as state-changing. Exempt tools flow freely, unconsulted.
 // classify is late-bound like readOnlyExt's: the composite ToolPort is built
 // after the extension set, so harness.New assigns it via SetClassifier before
 // any turn runs.
-//
-// nudgeIteration, when > 0, appends a reminder from that iteration onward on
-// turns where the advisor has not been consulted (off by default — Anthropic
-// measured nudging counterproductive on strong executor models).
 type GateExt struct {
 	nudgeIteration int
+	cadence        int
+	maxCalls       int
 	exempt         map[string]bool
 
 	mu                 sync.Mutex
@@ -70,21 +110,33 @@ type GateExt struct {
 	consulted          bool
 	calls              int
 	writesSinceConsult int
+	itersSinceConsult  int
 }
 
-// NewGateExt builds the write-gate. nudgeIteration <= 0 disables the nudge.
-// exemptTools names tools that bypass the gate even unconsulted (e.g. a
-// harness's forced single-shot answer tool, which has no orientation phase
-// to precede it).
-func NewGateExt(nudgeIteration int, exemptTools ...string) *GateExt {
+// NewGateExt builds the write-gate from cfg (see GateConfig for zero-value
+// semantics).
+func NewGateExt(cfg GateConfig) *GateExt {
 	var exempt map[string]bool
-	if len(exemptTools) > 0 {
-		exempt = make(map[string]bool, len(exemptTools))
-		for _, name := range exemptTools {
+	if len(cfg.ExemptTools) > 0 {
+		exempt = make(map[string]bool, len(cfg.ExemptTools))
+		for _, name := range cfg.ExemptTools {
 			exempt[strings.ToLower(name)] = true
 		}
 	}
-	return &GateExt{nudgeIteration: nudgeIteration, exempt: exempt}
+	cadence := cfg.Cadence
+	if cadence == 0 {
+		cadence = DefaultCadence
+	}
+	maxCalls := cfg.MaxCallsPerTurn
+	if maxCalls <= 0 {
+		maxCalls = DefaultMaxCallsPerTurn
+	}
+	return &GateExt{
+		nudgeIteration: cfg.NudgeIteration,
+		cadence:        cadence,
+		maxCalls:       maxCalls,
+		exempt:         exempt,
+	}
 }
 
 // SetClassifier late-binds the read-only classifier (composite.ReadOnly).
@@ -96,10 +148,16 @@ func (e *GateExt) SetClassifier(classify func(name string) bool) {
 
 func (e *GateExt) Name() string { return "advisor-gate" }
 
-func (e *GateExt) PromptFragment() string { return gatePromptFragment }
+func (e *GateExt) PromptFragment() string {
+	if e.cadence <= 0 {
+		return gatePromptFragment
+	}
+	return gatePromptFragment + fmt.Sprintf(cadenceRule, e.cadence)
+}
 
-// BeforeIteration resets the per-turn state on the first iteration and, when
-// nudging is enabled, reminds an unconsulted executor to call the advisor.
+// BeforeIteration resets the per-turn state on the first iteration, counts
+// iterations since the last consult, and appends the nudge/cadence reminders
+// when due.
 func (e *GateExt) BeforeIteration(_ context.Context, tc *core.TurnContext) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -107,11 +165,24 @@ func (e *GateExt) BeforeIteration(_ context.Context, tc *core.TurnContext) error
 		e.consulted = false
 		e.calls = 0
 		e.writesSinceConsult = 0
+		e.itersSinceConsult = 0
+	} else {
+		e.itersSinceConsult++
 	}
 	if e.nudgeIteration > 0 && tc.Iteration >= e.nudgeIteration && !e.consulted {
 		tc.Reminders = append(tc.Reminders, nudgeReminder)
 	}
+	if e.cadenceDue() {
+		tc.Reminders = append(tc.Reminders, cadenceReminder)
+	}
 	return nil
+}
+
+// cadenceDue reports whether the cadence rule should block: enabled, enough
+// iterations elapsed, and the call cap not yet reached (a capped executor
+// could never satisfy the rule). Caller holds e.mu.
+func (e *GateExt) cadenceDue() bool {
+	return e.cadence > 0 && e.itersSinceConsult >= e.cadence && e.calls < e.maxCalls
 }
 
 func (e *GateExt) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error {
@@ -125,15 +196,19 @@ func (e *GateExt) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error
 		// debt, so the plan tools cannot deadlock behind an unreachable consult.
 		e.consulted = true
 		e.writesSinceConsult = 0
-		if e.calls >= maxAdvisorCallsPerTurn {
+		e.itersSinceConsult = 0
+		if e.calls >= e.maxCalls {
 			deny(tcc, "advisor call cap reached for this turn; proceed with the guidance you have")
 			return nil
 		}
 		e.calls++
-	case e.classify != nil && e.classify(name):
-		// read-only orientation: always allowed
 	case e.exempt[name]:
 		// exempted by WithAdvisorExemptTools: always allowed
+	case e.cadenceDue():
+		deny(tcc, fmt.Sprintf("%d iterations since your last advisor consult. Stop and call "+
+			"`advisor` now. Put your competing hypotheses in the `question`.", e.itersSinceConsult))
+	case e.classify != nil && e.classify(name):
+		// read-only orientation: always allowed
 	case !e.consulted:
 		deny(tcc, "Call `advisor` before your first state-changing action this turn. "+
 			"Read-only orientation (reads, searches, listings) is allowed first. "+

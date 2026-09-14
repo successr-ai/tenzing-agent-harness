@@ -188,6 +188,8 @@ subagent_model: ""
 blackboard_model: ""
 advisor_model: ""                     # setting it enables the advisor + write-gate
 advisor_nudge: 0
+advisor_cadence: 0                     # iterations between forced consults; 0 = default 6, -1 = off
+advisor_max_calls: 0                   # advisor consults per turn; 0 = default 30
 
 max_turn_tokens: 0                     # per-turn budget (input+output); 0 = unlimited
 max_iterations: 0
@@ -252,6 +254,8 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `blackboard_model` | model ref | main model | `--blackboard-model` | Model for blackboard `llm_query`/`llm_batch`. |
 | `advisor_model` | model ref | unset | `--advisor-model` | Setting it enables the `advisor` tool and its write-gate (first state-changing tool call per turn requires a prior consult). |
 | `advisor_nudge` | int | `0` (off) | `--advisor-nudge` | Iteration from which an unconsulted executor gets a reminder; requires `advisor_model`. |
+| `advisor_cadence` | int | `0` (= 6) | `--advisor-cadence` | Max loop iterations between advisor consults before every tool (read-only included) is blocked until the executor consults. `-1` disables; requires `advisor_model`. |
+| `advisor_max_calls` | int | `0` (= 30) | `--advisor-max-calls` | Cap on advisor consults per turn; further calls are denied. Requires `advisor_model`. |
 | `max_turn_tokens` | int | `0` (unlimited) | `--max-turn-tokens` | Per-turn token budget, input+output cumulative. Distinct from a model's `max_response_tokens`, which caps a single response. |
 | `max_iterations` | int | `0` (unlimited) | `--max-iterations` | Per-turn iteration budget. |
 | `max_wall_clock` | duration | `"0s"` (unlimited) | `--max-wall-clock` | Per-turn wall-clock budget. |

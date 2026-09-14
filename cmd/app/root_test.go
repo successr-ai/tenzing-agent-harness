@@ -393,6 +393,8 @@ func TestMergeConfigFile(t *testing.T) {
 			SubagentModel:   "sub",
 			AdvisorModel:    "adv",
 			AdvisorNudge:    3,
+			AdvisorCadence:  -1,
+			AdvisorMaxCalls: 12,
 			MaxTurnTokens:   500,
 			MaxIterations:   9,
 			MaxWallClock:    dur(10 * time.Minute),
@@ -410,6 +412,9 @@ func TestMergeConfigFile(t *testing.T) {
 
 		if cfg.SubagentModel != "sub" || cfg.AdvisorModel != "adv" || cfg.AdvisorNudge != 3 {
 			t.Errorf("model fields not merged: %+v", cfg)
+		}
+		if cfg.AdvisorCadence != -1 || cfg.AdvisorMaxCalls != 12 {
+			t.Errorf("advisor cadence/max-calls not merged: %+v", cfg)
 		}
 		if cfg.MaxTurnTokens != 500 || cfg.MaxIterations != 9 || cfg.MaxWallClock != 10*time.Minute {
 			t.Errorf("budget fields not merged: %+v", cfg)

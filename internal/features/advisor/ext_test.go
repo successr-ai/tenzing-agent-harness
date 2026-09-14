@@ -10,7 +10,7 @@ import (
 
 // testGate returns a gate whose classifier marks read/grep as read-only.
 func testGate(nudge int) *GateExt {
-	g := NewGateExt(nudge)
+	g := NewGateExt(GateConfig{NudgeIteration: nudge})
 	g.SetClassifier(func(name string) bool {
 		return name == "read" || name == "grep"
 	})
@@ -70,7 +70,7 @@ func TestGateExt_Matrix(t *testing.T) {
 
 // testGateWithExempt is testGate plus WithAdvisorExemptTools-style names.
 func testGateWithExempt(nudge int, exempt ...string) *GateExt {
-	g := NewGateExt(nudge, exempt...)
+	g := NewGateExt(GateConfig{NudgeIteration: nudge, ExemptTools: exempt})
 	g.SetClassifier(func(name string) bool {
 		return name == "read" || name == "grep"
 	})
@@ -157,7 +157,7 @@ func TestGateExt_MidTurnIterationKeepsState(t *testing.T) {
 func TestGateExt_CallCap(t *testing.T) {
 	g := testGate(0)
 	startTurn(t, g, 1)
-	for i := range maxAdvisorCallsPerTurn {
+	for i := range DefaultMaxCallsPerTurn {
 		if tcc := call(t, g, "advisor"); tcc.Decision != core.Allow {
 			t.Fatalf("advisor call %d = %v, want Allow", i+1, tcc.Decision)
 		}
@@ -192,7 +192,7 @@ func TestGateExt_NeverLowersDecision(t *testing.T) {
 }
 
 func TestGateExt_NilClassifierFailsClosed(t *testing.T) {
-	g := NewGateExt(0) // classifier never bound
+	g := NewGateExt(GateConfig{}) // classifier never bound
 	startTurn(t, g, 1)
 	if tcc := call(t, g, "read"); tcc.Decision != core.Deny {
 		t.Errorf("read with nil classifier = %v, want Deny (fail closed)", tcc.Decision)
@@ -231,7 +231,7 @@ func TestGateExt_Nudge(t *testing.T) {
 }
 
 func TestGateExt_PromptFragment(t *testing.T) {
-	g := NewGateExt(0)
+	g := NewGateExt(GateConfig{})
 	frag := g.PromptFragment()
 	if !strings.Contains(frag, "advisor") {
 		t.Errorf("prompt fragment does not mention advisor: %q", frag)
@@ -241,6 +241,140 @@ func TestGateExt_PromptFragment(t *testing.T) {
 	}
 	if !strings.Contains(frag, "TodoUpdate") {
 		t.Errorf("prompt fragment does not state the plan-checkpoint rule: %q", frag)
+	}
+	if !strings.Contains(frag, "after 6 loop iterations") {
+		t.Errorf("prompt fragment does not state the default cadence rule: %q", frag)
+	}
+	if off := NewGateExt(GateConfig{Cadence: -1}).PromptFragment(); strings.Contains(off, "Cadence") {
+		t.Errorf("prompt fragment mentions cadence with the rule disabled: %q", off)
+	}
+}
+
+func TestGateExt_ConfigDefaults(t *testing.T) {
+	tests := []struct {
+		name         string
+		cfg          GateConfig
+		wantCadence  int
+		wantMaxCalls int
+	}{
+		{"zero config", GateConfig{}, DefaultCadence, DefaultMaxCallsPerTurn},
+		{"explicit", GateConfig{Cadence: 3, MaxCallsPerTurn: 5}, 3, 5},
+		{"cadence off", GateConfig{Cadence: -1}, -1, DefaultMaxCallsPerTurn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGateExt(tt.cfg)
+			if g.cadence != tt.wantCadence || g.maxCalls != tt.wantMaxCalls {
+				t.Errorf("cadence=%d maxCalls=%d, want %d %d", g.cadence, g.maxCalls, tt.wantCadence, tt.wantMaxCalls)
+			}
+		})
+	}
+}
+
+func TestGateExt_MaxCallsConfigurable(t *testing.T) {
+	g := NewGateExt(GateConfig{MaxCallsPerTurn: 2})
+	g.SetClassifier(func(string) bool { return false })
+	startTurn(t, g, 1)
+	call(t, g, "advisor")
+	call(t, g, "advisor")
+	if tcc := call(t, g, "advisor"); tcc.Decision != core.Deny {
+		t.Errorf("third advisor call with cap 2 = %v, want Deny", tcc.Decision)
+	}
+}
+
+// cadenceGate returns a gate with cadence 3 whose classifier marks read as
+// read-only, consulted at iteration 1.
+func cadenceGate(t *testing.T, cadence int) *GateExt {
+	t.Helper()
+	g := NewGateExt(GateConfig{Cadence: cadence})
+	g.SetClassifier(func(name string) bool { return name == "read" })
+	startTurn(t, g, 1)
+	call(t, g, "advisor")
+	return g
+}
+
+func TestGateExt_Cadence(t *testing.T) {
+	tests := []struct {
+		name       string
+		cadence    int
+		iteration  int    // iteration reached after the consult at 1
+		tool       string // asserted call at that iteration
+		want       core.Decision
+		wantRemind bool
+	}{
+		{"read below cadence", 3, 3, "read", core.Allow, false},
+		{"write below cadence", 3, 3, "write", core.Allow, false},
+		{"read at cadence blocked", 3, 4, "read", core.Deny, true},
+		{"write at cadence blocked", 3, 4, "write", core.Deny, true},
+		{"well past cadence blocked", 3, 9, "read", core.Deny, true},
+		{"advisor at cadence allowed", 3, 4, "advisor", core.Allow, true},
+		{"cadence disabled", -1, 50, "write", core.Allow, false},
+		{"default cadence below", 0, 6, "write", core.Allow, false},
+		{"default cadence at", 0, 7, "write", core.Deny, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := cadenceGate(t, tt.cadence)
+			var tc *core.TurnContext
+			for i := 2; i <= tt.iteration; i++ {
+				tc = startTurn(t, g, i)
+			}
+			if got := tc != nil && len(tc.Reminders) > 0; got != tt.wantRemind {
+				t.Errorf("reminder present = %v, want %v", got, tt.wantRemind)
+			}
+			if tcc := call(t, g, tt.tool); tcc.Decision != tt.want {
+				t.Errorf("%s at iteration %d = %v, want %v (%q)", tt.tool, tt.iteration, tcc.Decision, tt.want, tcc.Reason)
+			}
+		})
+	}
+}
+
+func TestGateExt_CadenceResetsOnConsult(t *testing.T) {
+	g := cadenceGate(t, 3)
+	for i := 2; i <= 4; i++ {
+		startTurn(t, g, i)
+	}
+	if tcc := call(t, g, "write"); tcc.Decision != core.Deny {
+		t.Fatalf("write at cadence = %v, want Deny", tcc.Decision)
+	}
+	call(t, g, "advisor")
+	if tcc := call(t, g, "write"); tcc.Decision != core.Allow {
+		t.Errorf("write right after re-consult = %v, want Allow (%q)", tcc.Decision, tcc.Reason)
+	}
+	// counter restarted: two more iterations still under cadence
+	startTurn(t, g, 5)
+	startTurn(t, g, 6)
+	if tcc := call(t, g, "write"); tcc.Decision != core.Allow {
+		t.Errorf("write 2 iterations after re-consult = %v, want Allow", tcc.Decision)
+	}
+}
+
+func TestGateExt_CadenceResetsPerTurn(t *testing.T) {
+	g := cadenceGate(t, 3)
+	for i := 2; i <= 4; i++ {
+		startTurn(t, g, i)
+	}
+	startTurn(t, g, 1) // new turn
+	call(t, g, "advisor")
+	if tcc := call(t, g, "write"); tcc.Decision != core.Allow {
+		t.Errorf("write on fresh turn after consult = %v, want Allow (%q)", tcc.Decision, tcc.Reason)
+	}
+}
+
+// Once the call cap is reached the cadence rule yields, so a long turn cannot
+// deadlock behind a consult the cap makes impossible.
+func TestGateExt_CadenceYieldsAtCap(t *testing.T) {
+	g := NewGateExt(GateConfig{Cadence: 2, MaxCallsPerTurn: 1})
+	g.SetClassifier(func(string) bool { return false })
+	startTurn(t, g, 1)
+	call(t, g, "advisor") // 1 of 1
+	for i := 2; i <= 4; i++ {
+		if tc := startTurn(t, g, i); len(tc.Reminders) > 0 {
+			t.Errorf("iteration %d: cadence reminder issued although cap reached", i)
+		}
+	}
+	if tcc := call(t, g, "write"); tcc.Decision != core.Allow {
+		t.Errorf("write past cadence with cap reached = %v, want Allow (%q)", tcc.Decision, tcc.Reason)
 	}
 }
 
@@ -298,7 +432,7 @@ func TestGateExt_PlanCheckpoints(t *testing.T) {
 func TestGateExt_CapClearsCheckpointDebt(t *testing.T) {
 	g := testGate(0)
 	startTurn(t, g, 1)
-	for range maxAdvisorCallsPerTurn {
+	for range DefaultMaxCallsPerTurn {
 		call(t, g, "advisor")
 	}
 	call(t, g, "write")

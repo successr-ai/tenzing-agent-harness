@@ -23,6 +23,8 @@ model: main
 subagent_model: sub
 advisor_model: adv
 advisor_nudge: 3
+advisor_cadence: 4
+advisor_max_calls: 12
 max_turn_tokens: 100000
 max_iterations: 50
 max_wall_clock: "10m"
@@ -69,6 +71,9 @@ models:
 
 	if f.Model != "main" || f.SubagentModel != "sub" || f.AdvisorModel != "adv" {
 		t.Errorf("model refs wrong: %+v", f)
+	}
+	if f.AdvisorCadence != 4 || f.AdvisorMaxCalls != 12 {
+		t.Errorf("advisor_cadence=%d advisor_max_calls=%d, want 4 12", f.AdvisorCadence, f.AdvisorMaxCalls)
 	}
 	if f.AdvisorNudge != 3 || f.MaxTurnTokens != 100000 || f.MaxIterations != 50 {
 		t.Errorf("numeric fields wrong: %+v", f)
@@ -151,6 +156,8 @@ func TestLoad_Errors(t *testing.T) {
 		{"bad duration type", "approval_timeout: [1]\n", "duration"},
 		{"mcp server missing command", "mcp_servers:\n  - name: fs\n", "name and command are required"},
 		{"negative nudge", "advisor_nudge: -1\n", "advisor_nudge"},
+		{"cadence below -1", "advisor_cadence: -2\n", "advisor_cadence"},
+		{"negative max calls", "advisor_max_calls: -1\n", "advisor_max_calls"},
 
 		// Old schema: each removed spelling points at where it went.
 		{"top-level base_url", "base_url: http://box:11434\n", "field base_url not found"},

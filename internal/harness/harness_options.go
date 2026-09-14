@@ -43,6 +43,15 @@ type harnessOptions struct {
 	// meaningful when advisorLLM is set.
 	advisorNudge int
 
+	// advisorCadence is the max loop iterations between advisor consults
+	// before the gate blocks every tool. 0 = advisor.DefaultCadence; < 0
+	// disables. Only meaningful when advisorLLM is set.
+	advisorCadence int
+
+	// advisorMaxCalls caps advisor consults per turn. 0 =
+	// advisor.DefaultMaxCallsPerTurn. Only meaningful when advisorLLM is set.
+	advisorMaxCalls int
+
 	// advisorExemptTools names tools the advisor write-gate never blocks,
 	// even unconsulted. Only meaningful when advisorLLM is set.
 	advisorExemptTools []string
@@ -234,6 +243,26 @@ func WithAdvisorLLM(llm common.LLM) HarnessOption {
 func WithAdvisorNudge(iteration int) HarnessOption {
 	return func(o *harnessOptions) {
 		o.advisorNudge = iteration
+	}
+}
+
+// WithAdvisorCadence sets the max loop iterations the executor may run
+// without consulting the advisor before the gate blocks every tool call
+// (read-only included) until it does. 0 keeps advisor.DefaultCadence; a
+// negative value disables the rule. Catches an executor oscillating between
+// hypotheses on its own. Ignored unless WithAdvisorLLM is also set.
+func WithAdvisorCadence(iterations int) HarnessOption {
+	return func(o *harnessOptions) {
+		o.advisorCadence = iterations
+	}
+}
+
+// WithAdvisorMaxCalls caps advisor consults per turn; further calls are
+// denied and the executor proceeds with the guidance it has. 0 keeps
+// advisor.DefaultMaxCallsPerTurn. Ignored unless WithAdvisorLLM is also set.
+func WithAdvisorMaxCalls(n int) HarnessOption {
+	return func(o *harnessOptions) {
+		o.advisorMaxCalls = n
 	}
 }
 

@@ -163,6 +163,8 @@ func newRootCmd() *cobra.Command {
 	fl.StringVar(&cfg.BlackboardModel, "blackboard-model", "", "model for blackboard llm_query (default: main model)")
 	fl.StringVar(&cfg.AdvisorModel, "advisor-model", "", "model for the advisor tool; setting it enables the advisor and its write-gate")
 	fl.IntVar(&cfg.AdvisorNudge, "advisor-nudge", 0, "iteration to start reminding an unconsulted executor to call advisor (0 = off; needs --advisor-model)")
+	fl.IntVar(&cfg.AdvisorCadence, "advisor-cadence", 0, "max loop iterations between advisor consults before every tool is blocked until the executor consults (0 = default 6, -1 = off; needs --advisor-model)")
+	fl.IntVar(&cfg.AdvisorMaxCalls, "advisor-max-calls", 0, "max advisor consults per turn (0 = default 30; needs --advisor-model)")
 
 	fl.Int64Var(&cfg.MaxTurnTokens, "max-turn-tokens", 0, "per-turn token budget (input+output cumulative), 0 = unlimited")
 	fl.IntVar(&cfg.MaxIterations, "max-iterations", 0, "per-turn iteration budget, 0 = unlimited")

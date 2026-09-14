@@ -45,6 +45,8 @@ const systemPrompt = "You are a senior technical advisor. You see the executor a
 	"The executor is required to consult you before its first state-changing action, " +
 	"before writing or changing its plan, and before marking a task done. If an earlier " +
 	"check is warranted, end with the milestone to re-consult at. " +
+	"If the transcript shows the executor reversing itself or cycling between hypotheses, " +
+	"say so plainly, pick one, and give a single discriminating test. " +
 	"Keep your guidance under roughly 80 words unless a critical risk demands more."
 
 // HistoryFunc returns the executor conversation to show the advisor.

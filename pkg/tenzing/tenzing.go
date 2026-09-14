@@ -69,6 +69,16 @@ var (
 	// default). Only meaningful together with WithAdvisorLLM.
 	WithAdvisorNudge = harness.WithAdvisorNudge
 
+	// WithAdvisorCadence sets the max loop iterations between advisor
+	// consults before the gate blocks every tool until the executor
+	// consults (0 = default 6, negative disables). Only meaningful together
+	// with WithAdvisorLLM.
+	WithAdvisorCadence = harness.WithAdvisorCadence
+
+	// WithAdvisorMaxCalls caps advisor consults per turn (0 = default 30).
+	// Only meaningful together with WithAdvisorLLM.
+	WithAdvisorMaxCalls = harness.WithAdvisorMaxCalls
+
 	// WithAdvisorExemptTools exempts the named tools from the advisor
 	// write-gate: they run even as a turn's first, unconsulted,
 	// state-changing call. Use for a harness whose only state-changing
