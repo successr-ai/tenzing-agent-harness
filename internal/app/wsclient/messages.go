@@ -96,6 +96,9 @@ type Approve struct {
 	// Whether it persists is the wiring's policy (connect mode keeps it in
 	// memory unless configured otherwise).
 	Glob string `json:"glob,omitempty"`
+	// Scope is "session" to keep Glob in memory for this process only, or
+	// "always" (the default) to leave persistence to the wiring's policy.
+	Scope string `json:"scope,omitempty"`
 }
 
 // SetModel switches the main model.

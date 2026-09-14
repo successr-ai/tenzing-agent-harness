@@ -221,7 +221,7 @@ func handlersFor(t *testing.T) (Handlers, *handlerRecorder) {
 		},
 		Steer:   func(message string) error { rec.steerCalled(message); return nil },
 		Cancel:  func() { rec.cancelCalled() },
-		Approve: func(callID string, approved bool, glob string) { rec.approveCalled(callID, approved, glob) },
+		Approve: func(callID string, approved bool, glob, _ string) { rec.approveCalled(callID, approved, glob) },
 		SetModel: func(model string) error {
 			rec.setModelCalled(model)
 			return errors.New("model " + model + " not declared")

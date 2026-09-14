@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions/shell"
 )
 
 // readBashRules decodes the bash rules the settings file at path holds.
@@ -49,7 +50,7 @@ func TestBashAllowStoreAdd(t *testing.T) {
 		if err := s.Add("git *"); err != nil {
 			t.Fatal(err)
 		}
-		if d, ok := s.Rules().Verdict("git status"); !ok || d != 0 {
+		if d, _, ok := s.Rules().Verdict("git commit -m x"); !ok || d != 0 {
 			t.Errorf("Verdict = (%v, %v), want an allow", d, ok)
 		}
 		reloaded := readBashRules(t, s.Path())
@@ -111,8 +112,32 @@ func TestBashAllowStoreAdd(t *testing.T) {
 		if err := s.Add("git *"); err == nil {
 			t.Fatal("want an error")
 		}
-		if _, ok := s.Rules().Verdict("git status"); ok {
+		if d, _, _ := s.Rules().Verdict("git commit -m x"); d == 0 {
 			t.Error("want the live rules untouched after a failed write")
+		}
+	})
+
+	t.Run("round-trips categories and classify, never session grants", func(t *testing.T) {
+		s := newStore(t, `{"permissions":{"bash":{"allow":["ls *"],"deny":[],
+		  "categories":{"allow":["vcs"],"deny":["fs:delete"]},
+		  "classify":{"mytool":"read"}}}}`)
+		s.Rules().AllowPatternSession("./tmp.sh *")
+		if err := s.Add("git *"); err != nil {
+			t.Fatal(err)
+		}
+		reloaded := readBashRules(t, s.Path())
+		allow, _ := reloaded.Lists()
+		if len(allow) != 2 || allow[0] != "ls *" || allow[1] != "git *" {
+			t.Errorf("allow = %v, want [ls * git *] (no session grant)", allow)
+		}
+		if ca, cd := reloaded.Categories(); ca != shell.VCS || cd != shell.FSDelete {
+			t.Errorf("categories = (%s, %s), want (vcs, fs:delete)", ca, cd)
+		}
+		if got := reloaded.Classify(); got["mytool"] != "read" {
+			t.Errorf("classify = %v", got)
+		}
+		if d, _, ok := s.Rules().Verdict("./tmp.sh"); !ok || d != 0 {
+			t.Errorf("session grant lost from the live rules: %v %v", d, ok)
 		}
 	})
 }

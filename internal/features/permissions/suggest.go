@@ -1,6 +1,10 @@
 package permissions
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions/shell"
+)
 
 // subcommandTools are binaries whose first non-flag word selects what the
 // command actually does, so a useful glob keeps it: `git log *` rather than
@@ -10,6 +14,10 @@ var subcommandTools = map[string]bool{
 	"pnpm": true, "cargo": true, "docker": true, "task": true, "gh": true,
 	"kubectl": true, "brew": true, "mise": true, "aws": true, "terraform": true,
 	"rtk": true,
+	// Wrappers: the glob keeps the inner binary (`sudo rm *`), so a rule
+	// for the wrapper never silently covers everything it can run.
+	"sudo": true, "env": true, "xargs": true, "timeout": true, "nice": true,
+	"nohup": true, "time": true, "command": true, "exec": true,
 }
 
 // flagSensitiveTools are binaries where a leading flag, not a subcommand,
@@ -21,49 +29,65 @@ var subcommandTools = map[string]bool{
 var flagSensitiveTools = map[string]bool{"sed": true}
 
 // Suggest proposes one allow glob for command: a rule covering the first
-// expression the current allow list does not already match. Chained commands
-// therefore converge one rule per approval instead of demanding the whole
-// chain up front.
+// segment that would still prompt — not covered by an allow glob, not
+// read-only, not category-allowed. Chained commands therefore converge one
+// rule per approval instead of demanding the whole chain up front.
 //
 // glob is empty when no rule is proposed, and reason then says why — the
-// command is already fully covered, or the expression writes a file and
-// should be approved case by case rather than allowlisted (Verdict does not
-// split on redirects, so a glob for the binary would cover the write too).
+// command would not prompt at all, or the segment writes a file through a
+// redirect or tee and should be approved case by case rather than
+// allowlisted (a glob for the binary would cover the write too).
 func (r *BashRules) Suggest(command string) (glob, reason string) {
-	exprs := splitExpressions(command)
-
-	r.mu.RLock()
-	allow := r.allow
-	r.mu.RUnlock()
-
-	for _, e := range exprs {
-		s := stripEnvPrefix(e)
-		if s == "" || matchAny(allow, s) {
+	a := r.Analyze(command)
+	if a.Err != nil {
+		return "", "could not parse command — approve case by case"
+	}
+	s := r.snapshot()
+	for _, seg := range a.Segments {
+		if s.covered(seg) {
 			continue
 		}
-		if writesFile(s) {
+		if writesViaRedirect(seg) || isTee(seg) {
 			return "", "writes a file — approve case by case"
 		}
-		return globFor(s), ""
+		if g := globFor(seg); g != "" {
+			return g, ""
+		}
+		return "", "command is not statically analysable — approve case by case"
 	}
 	return "", "already covered by the allow list"
 }
 
-// globFor builds the allow glob for a single expression: the binary, plus a
+// writesViaRedirect reports whether the segment's write comes from a
+// redirect rather than from the binary itself. Verdict uses it too: a glob
+// for the binary does not cover a redirect.
+func writesViaRedirect(seg shell.Segment) bool {
+	for _, w := range seg.Why {
+		if strings.HasPrefix(w, "redirect ") {
+			return true
+		}
+	}
+	return false
+}
+
+// isTee: tee writes by definition, and a `tee *` glob would allowlist
+// writing anywhere, so Suggest never proposes one.
+func isTee(seg shell.Segment) bool {
+	return len(seg.Argv) > 0 && seg.Argv[0].Static && seg.Argv[0].Value == "tee" && seg.Class.Has(shell.FSWrite)
+}
+
+// globFor builds the allow glob for a single segment: the binary, plus a
 // subcommand or a distinguishing flag where one decides what the binary
-// does, plus ' *'.
-//
-// ponytail: fields-based tokenizing. A quoted argument containing spaces in
-// the subcommand slot (`git "log"`) would be mis-split; no real command does
-// that, and the suggestion is editable anyway.
-func globFor(expr string) string {
-	f := strings.Fields(expr)
-	if len(f) == 0 {
+// does, plus ' *'. Non-static words fall back to the binary alone.
+func globFor(seg shell.Segment) string {
+	argv := seg.Argv
+	if len(argv) == 0 || !argv[0].Static {
+		// A compound-command redirect or a $CMD: nothing to name.
 		return ""
 	}
-	bin := f[0]
-	if len(f) > 1 {
-		switch second := f[1]; {
+	bin := argv[0].Value
+	if len(argv) > 1 && argv[1].Static {
+		switch second := argv[1].Value; {
 		case subcommandTools[bin] && !strings.HasPrefix(second, "-"):
 			return bin + " " + second + " *"
 		case flagSensitiveTools[bin] && strings.HasPrefix(second, "-"):
@@ -71,44 +95,4 @@ func globFor(expr string) string {
 		}
 	}
 	return bin + " *"
-}
-
-// writesFile reports whether an expression sends output to a file: a `>` or
-// `>>` redirect outside quotes, or a tee. Descriptor duplications (`2>&1`,
-// `>&2`) and discards (`2>/dev/null`) write nowhere new and do not count.
-func writesFile(expr string) bool {
-	// Expressions are already split on '|', so a tee is this expression's
-	// own binary.
-	if f := strings.Fields(expr); len(f) > 0 && f[0] == "tee" {
-		return true
-	}
-	for i := 0; i < len(expr); {
-		switch c := expr[i]; {
-		case c == '\\' && i+1 < len(expr):
-			i += 2
-		case c == '\'' || c == '"':
-			_, i = matchByte(expr, i+1, c)
-		case c == '>':
-			i++
-			if i < len(expr) && expr[i] == '>' { // >>
-				i++
-			}
-			for i < len(expr) && (expr[i] == ' ' || expr[i] == '\t') {
-				i++
-			}
-			if i < len(expr) && expr[i] == '&' { // 2>&1, >&2
-				continue
-			}
-			target := expr[i:]
-			if j := strings.IndexAny(target, " \t"); j >= 0 {
-				target = target[:j]
-			}
-			if target != "/dev/null" {
-				return true
-			}
-		default:
-			i++
-		}
-	}
-	return false
 }

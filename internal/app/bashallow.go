@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions/shell"
 )
 
 // BashKey is the only tool name settings.json's permissions map honours.
@@ -48,7 +49,8 @@ func (s *BashAllowStore) Path() string { return s.path }
 func (s *BashAllowStore) Rules() *permissions.BashRules { return s.rules }
 
 // Add persists pattern to the settings file's bash allow list, then applies
-// it to the running session.
+// it to the running session. Session-only grants (AllowPatternSession) are
+// not in Lists() and so never reach the file.
 func (s *BashAllowStore) Add(pattern string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -57,17 +59,32 @@ func (s *BashAllowStore) Add(pattern string) error {
 	if !slices.Contains(allow, pattern) {
 		allow = append(allow, pattern)
 	}
-	if err := writeBashSection(s.path, allow, deny); err != nil {
+	catAllow, catDeny := s.rules.Categories()
+	section := bashSection{
+		Allow:      allow,
+		Deny:       deny,
+		Categories: categoriesSection{Allow: classNames(catAllow), Deny: classNames(catDeny)},
+		Classify:   s.rules.Classify(),
+	}
+	if err := writeBashSection(s.path, section); err != nil {
 		return err
 	}
 	s.rules.AllowPattern(pattern)
 	return nil
 }
 
+// classNames renders a class set as the settings-file list; empty for read.
+func classNames(c shell.Class) []string {
+	if c.IsRead() {
+		return []string{}
+	}
+	return strings.Split(c.String(), ",")
+}
+
 // writeBashSection rewrites permissions.bash in the settings file, leaving
 // every other top-level key and every other tool under permissions as they
 // were. An absent file is created.
-func writeBashSection(path string, allow, deny []string) error {
+func writeBashSection(path string, section bashSection) error {
 	doc := map[string]json.RawMessage{}
 	switch data, err := os.ReadFile(path); {
 	case err == nil:
@@ -85,12 +102,15 @@ func writeBashSection(path string, allow, deny []string) error {
 		}
 	}
 
-	section, err := json.Marshal(bashSection{Allow: allow, Deny: deny})
+	if section.Classify == nil {
+		section.Classify = map[string]string{}
+	}
+	raw, err := json.Marshal(section)
 	if err != nil {
 		return fmt.Errorf("settings %s: %w", path, err)
 	}
 	key, _, _ := LookupTool(perms, BashKey)
-	perms[key] = section
+	perms[key] = raw
 	if doc["permissions"], err = json.Marshal(perms); err != nil {
 		return fmt.Errorf("settings %s: %w", path, err)
 	}
@@ -108,6 +128,13 @@ func writeBashSection(path string, allow, deny []string) error {
 // bashSection is the written shape of permissions.bash. Reading goes through
 // permissions.BashRules' own decoder; only writing needs this.
 type bashSection struct {
+	Allow      []string          `json:"allow"`
+	Deny       []string          `json:"deny"`
+	Categories categoriesSection `json:"categories"`
+	Classify   map[string]string `json:"classify"`
+}
+
+type categoriesSection struct {
 	Allow []string `json:"allow"`
 	Deny  []string `json:"deny"`
 }

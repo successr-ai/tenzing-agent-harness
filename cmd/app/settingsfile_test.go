@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
+	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
 )
 
@@ -177,8 +178,8 @@ func TestApplyBashRules(t *testing.T) {
 		if cfg.PermissionPolicy == nil || cfg.PermissionPolicy.Bash == nil {
 			t.Fatal("want empty bash rules attached")
 		}
-		if _, ok := cfg.PermissionPolicy.Bash.Verdict("ls -la"); ok {
-			t.Error("want no verdict from empty rules")
+		if d, _, ok := cfg.PermissionPolicy.Bash.Verdict("./x.sh"); !ok || d != core.AskUser {
+			t.Errorf("Verdict = (%v, %v), want (AskUser, true) from empty rules on an unknown command", d, ok)
 		}
 		if cfg.BashAllow == nil || cfg.BashAllow.Path() != "settings.json" {
 			t.Errorf("store = %+v", cfg.BashAllow)

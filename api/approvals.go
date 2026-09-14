@@ -13,13 +13,21 @@ import (
 )
 
 // handleApprove answers one pending AskUser request. A non-empty `allow` is
-// the "allow always" answer: the glob is persisted to the settings file and
-// applied to the running session before the call is approved, so matching
-// commands stop prompting for the rest of the session.
+// an "allow" answer: with scope "always" (the default) the glob is persisted
+// to the settings file and applied to the running session; with scope
+// "session" it is applied in memory only. Either way the call is approved
+// and matching commands stop prompting for the rest of the session.
 func (s *Server) handleApprove(_ context.Context, _ router.MapAuthInfo, in *approveInput) (*statusOutput, error) {
 	pattern := strings.TrimSpace(in.Body.Allow)
 	if in.Body.Allow != "" && pattern == "" {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "allow must not be blank")
+	}
+	scope := in.Body.Scope
+	if scope == "" {
+		scope = "always"
+	}
+	if scope != "always" && scope != "session" {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "scope must be 'always' or 'session'")
 	}
 
 	pending, err := s.takePending(in.Body.CallID, pattern)
@@ -27,7 +35,7 @@ func (s *Server) handleApprove(_ context.Context, _ router.MapAuthInfo, in *appr
 		return nil, err
 	}
 	if pattern != "" {
-		if err := s.persistAllow(pending, pattern); err != nil {
+		if err := s.grantAllow(pending, pattern, scope); err != nil {
 			return nil, err
 		}
 		s.approvals.Remove(in.Body.CallID)
@@ -38,6 +46,8 @@ func (s *Server) handleApprove(_ context.Context, _ router.MapAuthInfo, in *appr
 
 	out := &statusOutput{}
 	switch {
+	case pattern != "" && scope == "session":
+		out.Body.Status = "allowed_session"
 	case pattern != "":
 		out.Body.Status = "allowed"
 	case approved:
@@ -67,13 +77,19 @@ func (s *Server) takePending(callID, pattern string) (approvals.Pending, error) 
 	return pending, nil
 }
 
-// persistAllow validates and writes an "allow always" glob for a bash call.
-func (s *Server) persistAllow(pending approvals.Pending, pattern string) error {
+// grantAllow validates an allow glob for a bash call and applies it: to the
+// settings file and the live rules (always), or the live rules only
+// (session).
+func (s *Server) grantAllow(pending approvals.Pending, pattern, scope string) error {
 	if s.cfg.BashAllow == nil {
 		return srverrors.Wrap(srverrors.ErrBadRequest, "no settings file configured for allow")
 	}
 	if !strings.EqualFold(pending.Tool, "bash") {
 		return srverrors.Wrap(srverrors.ErrBadRequest, "allow applies to bash calls only")
+	}
+	if scope == "session" {
+		s.cfg.BashAllow.Rules().AllowPatternSession(pattern)
+		return nil
 	}
 	return s.cfg.BashAllow.Add(pattern)
 }

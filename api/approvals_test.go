@@ -97,7 +97,7 @@ func TestHandleApprove(t *testing.T) {
 		if !a.called || !a.got {
 			t.Error("want the call approved")
 		}
-		if _, ok := store.Rules().Verdict("git status"); !ok {
+		if d, _, ok := store.Rules().Verdict("git commit -m x"); !ok || d != 0 {
 			t.Error("want the pattern live for this session")
 		}
 		if allow := persistedBashAllow(t, store.Path()); len(allow) != 1 || allow[0] != "git *" {
@@ -105,6 +105,40 @@ func TestHandleApprove(t *testing.T) {
 		}
 		if s.approvals.Len() != 0 {
 			t.Error("want the pending request cleared")
+		}
+	})
+
+	t.Run("session scope applies live without persisting", func(t *testing.T) {
+		s, a, store := setup(t, "bash", true)
+		in := &approveInput{}
+		in.Body.CallID, in.Body.Allow, in.Body.Scope = "c1", "git *", "session"
+		out, err := s.handleApprove(context.Background(), nil, in)
+		if err != nil || out.Body.Status != "allowed_session" {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+		if !a.called || !a.got {
+			t.Error("want the call approved")
+		}
+		if d, _, ok := store.Rules().Verdict("git commit -m x"); !ok || d != 0 {
+			t.Error("want the pattern live for this session")
+		}
+		if _, err := os.Stat(store.Path()); !os.IsNotExist(err) {
+			t.Errorf("settings file should not exist after a session grant (stat err = %v)", err)
+		}
+		if got := store.Rules().SessionList(); len(got) != 1 || got[0] != "git *" {
+			t.Errorf("SessionList = %v", got)
+		}
+	})
+
+	t.Run("unknown scope is rejected", func(t *testing.T) {
+		s, a, _ := setup(t, "bash", true)
+		in := &approveInput{}
+		in.Body.CallID, in.Body.Allow, in.Body.Scope = "c1", "git *", "forever"
+		if _, err := s.handleApprove(context.Background(), nil, in); err == nil {
+			t.Fatal("want an error")
+		}
+		if a.called {
+			t.Error("call must stay pending")
 		}
 	})
 
@@ -155,7 +189,7 @@ func TestHandleApprove(t *testing.T) {
 		if s.approvals.Len() != 1 {
 			t.Error("want the request still pending")
 		}
-		if _, ok := store.Rules().Verdict("git status"); ok {
+		if d, _, _ := store.Rules().Verdict("git commit -m x"); d == 0 {
 			t.Error("want the live rules untouched")
 		}
 	})
@@ -290,9 +324,9 @@ func TestHandleSuggest(t *testing.T) {
 	}
 
 	t.Run("first uncovered expression", func(t *testing.T) {
-		s := setup(t, "bash", `{"command":"grep -n x f | head -3"}`, []string{"grep *"}, true)
-		if out := call(t, s, "c1"); out.Body.Glob != "head *" || out.Body.Reason != "" {
-			t.Errorf("glob = %q, reason = %q; want \"head *\"", out.Body.Glob, out.Body.Reason)
+		s := setup(t, "bash", `{"command":"./a.sh -n x | ./b.sh -3"}`, []string{"./a.sh *"}, true)
+		if out := call(t, s, "c1"); out.Body.Glob != "./b.sh *" || out.Body.Reason != "" {
+			t.Errorf("glob = %q, reason = %q; want \"./b.sh *\"", out.Body.Glob, out.Body.Reason)
 		}
 		if s.approvals.Len() != 1 {
 			t.Error("want the request still pending")
@@ -333,7 +367,7 @@ func TestHandleSuggest(t *testing.T) {
 // The pending call's tool name is matched case-insensitively: a harness that
 // registers the tool as "Bash" still gets a glob suggestion.
 func TestHandleSuggestToolNameCase(t *testing.T) {
-	s := pendingServer(t, "c1", approvals.Pending{Respond: func(bool) {}, Tool: "Bash", Input: `{"command":"head -3 f"}`})
+	s := pendingServer(t, "c1", approvals.Pending{Respond: func(bool) {}, Tool: "Bash", Input: `{"command":"./b.sh -3 f"}`})
 	s.cfg.BashAllow = app.NewBashAllowStore(filepath.Join(t.TempDir(), "settings.json"), permissions.NewBashRules(nil, nil))
 	in := &suggestInput{}
 	in.Body.CallID = "c1"
@@ -341,7 +375,7 @@ func TestHandleSuggestToolNameCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Body.Glob != "head *" {
-		t.Errorf("glob = %q, reason = %q; want \"head *\"", out.Body.Glob, out.Body.Reason)
+	if out.Body.Glob != "./b.sh *" {
+		t.Errorf("glob = %q, reason = %q; want \"./b.sh *\"", out.Body.Glob, out.Body.Reason)
 	}
 }

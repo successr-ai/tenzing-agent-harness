@@ -25,7 +25,7 @@ type BashTool struct{}
 func (t *BashTool) Name() string { return "bash" }
 
 func (t *BashTool) Description() string {
-	return "Execute a shell command in the project working directory."
+	return "Execute a bash command in the project working directory."
 }
 
 func (t *BashTool) Schema() tooldef.Schema {
@@ -75,7 +75,7 @@ func (t *BashTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 	}
 
 	// create bash command
-	cmd := exec.CommandContext(tctx, "sh", "-c", command)
+	cmd := exec.CommandContext(tctx, "bash", "-c", command)
 	if cwd != "" && isValidDirectory(cwd) {
 		cmd.Dir = cwd
 	}

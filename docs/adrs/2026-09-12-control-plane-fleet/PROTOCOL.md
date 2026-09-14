@@ -62,7 +62,7 @@ the plane reads the sandbox for content.
 | `query` | `{id, query, images?}` | Start a turn (queued if one is running; FIFO). Reply: `result` when the turn ends, with this `id`. `images` is the queryInput image array (media_type + base64 data). |
 | `steer` | `{id, message}` | Inject mid-turn steering. Acknowledged by an `event` (SteeringInjected) — no dedicated reply. |
 | `cancel` | `{id}` | Cancel the running turn (and drop queued ones). The turn ends with `result{outcome:"cancelled"}`. |
-| `approve` | `{id, call_id, approved, glob?}` | Answer a pending `approval_request`. `glob` adds a bash allow rule when `approved` ("allow always"). Serve mode persists it to settings.json; connect mode keeps it **in memory for the process lifetime** unless `connect.ephemeral_grants: false` (then it persists like serve mode). |
+| `approve` | `{id, call_id, approved, glob?, scope?}` | Answer a pending `approval_request`. `glob` adds a bash allow rule when `approved`. `scope` is `"always"` (default) or `"session"`. `session` keeps the glob **in memory for the process lifetime**. `always` persists it to settings.json in serve-mode parity — except that connect mode's default `connect.ephemeral_grants: true` still keeps it in memory; set it to `false` to persist. |
 | `set-model` | `{id, model}` | Switch the main model (same validation as POST /model). Errors: `{type:"error", id, detail}`. |
 | `set-thinking` | `{id, enabled}` | Toggle reasoning. |
 | `shutdown` | `{id}` | Graceful teardown: cancel the running turn (it reports `result{outcome:"cancelled"}`) and drop queued ones, then reply `shutdown_ack{id}`, close normally, and exit 0. The agent does not reconnect. |

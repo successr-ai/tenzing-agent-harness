@@ -21,7 +21,13 @@ const defaultSettingsPath = "settings.json"
 // ignored, as are other top-level keys. Tool names are matched
 // case-insensitively, so "Bash" and "bash" name the same tool.
 //
-//	{"permissions": {"bash": {"allow": ["ls *"], "deny": ["rm -rf *"]}}}
+//	{"permissions": {"bash": {
+//	  "allow": ["ls *"], "deny": ["rm -rf *"],
+//	  "categories": {"allow": ["vcs"], "deny": ["fs:delete"]},
+//	  "classify": {"mytool": "read", "mytool deploy": "net"}}}}
+//
+// categories name classes from permissions/shell (read, fs:write,
+// fs:delete, net, vcs); classify overrides the built-in command table.
 type settingsFile struct {
 	Permissions map[string]*permissions.BashRules `json:"permissions"`
 }

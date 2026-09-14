@@ -109,8 +109,8 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		RunTurn: serial.run,
 		Steer:   h.Steer,
 		Cancel:  serial.flush, // the explicit cancel: flush waiters (the running turn is cancelled by the client's cancel command path)
-		Approve: func(callID string, approved bool, glob string) {
-			connectApprove(cfg.BashAllow, registry, cfg.ConnectEphemeralGrants, callID, approved, glob)
+		Approve: func(callID string, approved bool, glob, scope string) {
+			connectApprove(cfg.BashAllow, registry, cfg.ConnectEphemeralGrants || scope == "session", callID, approved, glob)
 		},
 		SetModel:       func(ref string) error { return setConnectModel(cfg, ref, h) },
 		SetThinking:    h.SetThinking,
@@ -353,14 +353,16 @@ func observeConnectEvent(ev core.Event, registry *approvals.Registry, subagents 
 	}
 }
 
-// connectApprove answers a pending approval and applies an "allow always"
-// glob: in memory for the process lifetime (ephemeral, the fleet default —
-// per-node grants die with the node) or through the settings store
-// (durable, serve-mode parity) when connect.ephemeral_grants is false.
+// connectApprove answers a pending approval and applies an allow glob: in
+// memory for the process lifetime (ephemeral — the fleet default, so
+// per-node grants die with the node, and also what an explicit
+// scope:"session" asks for) or through the settings store (durable,
+// serve-mode parity) when connect.ephemeral_grants is false and the plane
+// did not ask for session scope.
 func connectApprove(store *app.BashAllowStore, registry *approvals.Registry, ephemeral bool, callID string, approved bool, glob string) {
 	if approved && glob != "" && store != nil {
 		if ephemeral {
-			store.Rules().AllowPattern(glob)
+			store.Rules().AllowPatternSession(glob)
 		} else if err := store.Add(glob); err != nil {
 			slog.Warn("connect: persist allow rule failed", "glob", glob, "error", err)
 		}

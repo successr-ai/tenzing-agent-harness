@@ -1,6 +1,6 @@
 module github.com/successr-ai/tenzing-agent-harness
 
-go 1.25.9
+go 1.26.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.56.0
@@ -14,6 +14,7 @@ require (
 	github.com/tab58/huma-http-server v0.3.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sync v0.21.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
@@ -44,6 +45,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )

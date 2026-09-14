@@ -134,8 +134,12 @@ func TestConnectApprove(t *testing.T) {
 				t.Fatalf("approval answered = %v, want %v", answered, tt.approved)
 			}
 			allow, _ := rules.Lists()
+			allow = append(allow, rules.SessionList()...)
 			if got := slices.Contains(allow, tt.glob) && tt.glob != ""; got != tt.wantRule {
 				t.Errorf("rule present = %v, want %v (allow=%v)", got, tt.wantRule, allow)
+			}
+			if persisted, _ := rules.Lists(); tt.ephemeral && len(persisted) != 0 {
+				t.Errorf("ephemeral grant reached the persisted list: %v", persisted)
 			}
 			_, err := os.Stat(path)
 			if got := err == nil; got != tt.wantFile {

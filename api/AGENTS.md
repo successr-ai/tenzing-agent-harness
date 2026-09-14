@@ -50,7 +50,7 @@ Other `ServerConfig` fields: `Bus` (required), `Logs` (nil unmounts `GET /debug`
 | `api.go` | `Server`, `ServerConfig`, collaborator interfaces, `ErrNotAttached`, `New`, `Attach`, `Start`, `Shutdown`, `TextDelta`/`ThinkingDelta`, `registerRoutes` (raw routes `GET /`, `GET /events`, `GET /debug`, `POST /ingest/{name}` bypass huma; everything else is a typed `route(...)` and appears in the OpenAPI spec), `runnerFunc` |
 | `events.go` | `forwardEvents` + `observe`: subagent label map, approval capture, cost tracking, trailing `cost` event |
 | `turns.go` | `/query` `/steer` `/state` `/cancel` `/info`, `validateImages`, `StartNexusTurn`/`nexusPrompt`, `contextWindow` |
-| `approvals.go` | `/approve` (`takePending`, `persistAllow`), `/preview`, `/suggest` |
+| `approvals.go` | `/approve` (`takePending`, `grantAllow` — `allow` glob with `scope` `always`/`session`), `/preview`, `/suggest` |
 | `controls.go` | `/clear` `/resume` `/compact` `/thinking` `/model` `/models` `/stats` `/trust` (GET/POST) |
 | `sessions.go` | `/sessions` (GET/DELETE/PATCH), `/messages` |
 | `types.go` | huma input/output structs (no functions, no test file) |

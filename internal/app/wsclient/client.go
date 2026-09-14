@@ -53,7 +53,7 @@ type Handlers struct {
 	// Cancel stops the running turn (and drops queued ones).
 	Cancel func()
 	// Approve answers a pending approval call.
-	Approve func(callID string, approved bool, glob string)
+	Approve func(callID string, approved bool, glob, scope string)
 	// SetModel switches the main model; error feeds back to the plane.
 	SetModel func(model string) error
 	// SetThinking toggles reasoning.
@@ -481,7 +481,7 @@ func (c *Client) dispatch(ctx context.Context, msg any) {
 		c.cancelTurnContext()
 		c.h.Cancel()
 	case *Approve:
-		c.h.Approve(m.CallID, m.Approved, m.Glob)
+		c.h.Approve(m.CallID, m.Approved, m.Glob, m.Scope)
 	case *SetModel:
 		if err := c.h.SetModel(m.Model); err != nil {
 			c.send(ctx, Error{Type: "error", ID: m.ID, Code: "set_model", Detail: err.Error()})

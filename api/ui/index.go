@@ -67,6 +67,7 @@ const indexHTML = `<!DOCTYPE html>
   .msg.approval button { margin-right: 0.5rem; margin-top: 0.5rem; }
   .msg.approval .deny { background: var(--red); }
   .msg.approval input.pattern { margin-top: 0.5rem; font-family: inherit; font-size: inherit; padding: 0.15rem 0.3rem; }
+  .msg.approval pre.reason { margin: 0.4rem 0 0; opacity: 0.85; white-space: pre-wrap; }
   .diff { margin-top: 0.25rem; overflow-x: auto; white-space: pre; font-size: 0.75rem; line-height: 1.35; }
   .diff .add { color: var(--green); }
   .diff .del { color: var(--red); }
@@ -612,25 +613,37 @@ es.addEventListener('approval.requested', e => {
   const arg = toolArg(d.data.tool_name, d.data.input);
   const el = addMsg('approval', '⚠ ' + agentTag(d) + d.data.tool_name + ' wants to run:\n' +
     (arg.length > 500 ? arg.slice(0, 500) + '…' : arg));
+  // For bash the reason is the shell analysis: one line per mutating
+  // segment (class, command, why), a parse error, or a category denial —
+  // the decision is made against that rather than the raw command.
+  const isBash = (d.data.tool_name || '').toLowerCase() === 'bash';
+  if (isBash && d.data.reason) {
+    const why = document.createElement('pre');
+    why.className = 'reason';
+    why.textContent = d.data.reason;
+    el.appendChild(why);
+  }
 
   const approve = document.createElement('button');
   approve.textContent = 'approve';
   const deny = document.createElement('button');
   deny.textContent = 'deny';
   deny.className = 'deny';
-  // "allow always" is bash-only: it writes the glob to the settings file's
-  // bash allow list and applies it to this session, so matching commands
-  // stop prompting. Prefilled locally with the command's first word + ' *',
-  // then refined by /suggest, which knows the live allow list and proposes a
-  // rule for the first expression it does not already cover.
-  const isBash = (d.data.tool_name || '').toLowerCase() === 'bash';
-  let always, pattern;
+  // "allow always" / "allow for session" are bash-only: both apply the glob
+  // to this session's allow list so matching commands stop prompting; only
+  // "always" also writes it to the settings file. Prefilled locally with the
+  // command's first word + ' *', then refined by /suggest, which knows the
+  // live allow list and proposes a rule for the first segment that would
+  // still prompt.
+  let always, session, pattern;
   if (isBash) {
     pattern = document.createElement('input');
     pattern.className = 'pattern';
     pattern.value = suggestGlob(d.data.input);
     always = document.createElement('button');
     always.textContent = 'allow always';
+    session = document.createElement('button');
+    session.textContent = 'allow for session';
     fetch('/suggest', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -661,18 +674,20 @@ es.addEventListener('approval.requested', e => {
     }).catch(() => { /* preview is advisory: never block the decision */ });
   }
 
-  const buttons = () => isBash ? [approve, deny, always] : [approve, deny];
-  const decide = async (approved, allow) => {
+  const buttons = () => isBash ? [approve, deny, always, session] : [approve, deny];
+  const decide = async (approved, allow, scope) => {
     buttons().forEach(b => b.disabled = true);
     if (pattern) pattern.disabled = true;
     try {
       const res = await fetch('/approve', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({call_id: d.data.call_id, approved, allow}),
+        body: JSON.stringify({call_id: d.data.call_id, approved, allow, scope}),
       });
       if (!res.ok) throw new Error('approve failed: ' + res.status + ' ' + await res.text());
-      el.append(' → ' + (allow ? 'always allowing ' + allow : approved ? 'approved' : 'denied'));
+      const verdict = !allow ? (approved ? 'approved' : 'denied')
+        : scope === 'session' ? 'allowing ' + allow + ' this session' : 'always allowing ' + allow;
+      el.append(' → ' + verdict);
     } catch(err) {
       // Leave the request answerable: the write may have failed.
       buttons().forEach(b => b.disabled = false);
@@ -688,9 +703,14 @@ es.addEventListener('approval.requested', e => {
   if (isBash) {
     always.onclick = () => {
       const p = pattern.value.trim();
-      if (p) decide(true, p);
+      if (p) decide(true, p, 'always');
+    };
+    session.onclick = () => {
+      const p = pattern.value.trim();
+      if (p) decide(true, p, 'session');
     };
     el.appendChild(always);
+    el.appendChild(session);
     el.appendChild(pattern);
   }
   chat.scrollTop = chat.scrollHeight;

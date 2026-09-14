@@ -143,7 +143,8 @@ type approveInput struct {
 	Body struct {
 		CallID   string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
 		Approved bool   `json:"approved" doc:"true to run the tool, false to deny"`
-		Allow    string `json:"allow,omitempty" doc:"bash glob to add to the settings file's allow list; implies approved, bash calls only"`
+		Allow    string `json:"allow,omitempty" doc:"bash glob to add to the allow list; implies approved, bash calls only"`
+		Scope    string `json:"scope,omitempty" doc:"with allow: 'always' (default) persists the glob to the settings file, 'session' keeps it in memory for this process only"`
 	}
 }
 

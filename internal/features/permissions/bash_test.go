@@ -4,71 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
-	"sort"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions/shell"
 )
-
-func TestSplitExpressions(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		want    []string
-	}{
-		{"single", "ls -la", []string{"ls -la"}},
-		{"and", "ls -la && pwd", []string{"ls -la", "pwd"}},
-		{"or", "false || pwd", []string{"false", "pwd"}},
-		{"semicolon", "ls; pwd", []string{"ls", "pwd"}},
-		{"pipe", "ls | head", []string{"head", "ls"}},
-		{"newline", "ls\npwd", []string{"ls", "pwd"}},
-		{"empty segments dropped", "ls ;; ", []string{"ls"}},
-		{"blank command", "   ", nil},
-
-		// Redirects are part of the expression, not separators.
-		{"redirect stays", "ls > /etc/passwd", []string{"ls > /etc/passwd"}},
-		{"fd redirect keeps its ampersand", "ls > /dev/null 2>&1", []string{"ls > /dev/null 2>&1"}},
-		{"ampersand-redirect keeps its ampersand", "ls &> out", []string{"ls &> out"}},
-
-		// A bare & backgrounds the preceding command: two expressions.
-		{"background", "ls & pwd", []string{"ls", "pwd"}},
-		{"trailing background", "ls &", []string{"ls"}},
-		{"quoted ampersand", `echo "a & b"`, []string{`echo "a & b"`}},
-
-		// Line continuations are escaped, so they are not separators.
-		{"line continuation", "ls \\\n  -la", []string{"ls \\\n  -la"}},
-		{"crlf", "ls\r\npwd", []string{"ls", "pwd"}},
-
-		// Quoting hides separators.
-		{"double quoted", `echo "a && b"`, []string{`echo "a && b"`}},
-		{"single quoted", `echo 'a | b'`, []string{`echo 'a | b'`}},
-		{"escaped", `echo a \&\& b`, []string{`echo a \&\& b`}},
-		{"unterminated quote", `echo "a && b`, []string{`echo "a && b`}},
-
-		// Command substitution yields its body as an extra expression.
-		{"dollar paren", "x=$(rm -rf /)", []string{"rm -rf /", "x=$(rm -rf /)"}},
-		{"nested paren", "x=$(echo $(pwd))", []string{"echo $(pwd)", "pwd", "x=$(echo $(pwd))"}},
-		{"backticks", "x=`rm -rf /`", []string{"rm -rf /", "x=`rm -rf /`"}},
-		{"substitution inside double quotes", `echo "$(rm -rf /)"`, []string{"rm -rf /", `echo "$(rm -rf /)"`}},
-		{"substitution inside single quotes is literal", `echo '$(rm -rf /)'`, []string{`echo '$(rm -rf /)'`}},
-		{"unterminated substitution", "x=$(rm -rf /", []string{"rm -rf /", "x=$(rm -rf /"}},
-		{"lone backtick", "echo `", []string{"echo `"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := splitExpressions(tt.command)
-			sort.Strings(got)
-			want := append([]string(nil), tt.want...)
-			sort.Strings(want)
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("splitExpressions(%q) = %q, want %q", tt.command, got, want)
-			}
-		})
-	}
-}
 
 func TestMatchGlob(t *testing.T) {
 	tests := []struct {
@@ -116,20 +58,21 @@ func TestBashRulesVerdict(t *testing.T) {
 	}{
 		{"allowed", "ls -la", core.Allow, true},
 		{"every expression allowed", "ls -la && git status", core.Allow, true},
-		{"one expression unmatched", "ls -la && whoami", core.Allow, false},
+		{"one expression unmatched", "ls -la && ./whoami.sh", core.AskUser, true},
 		{"denied", "rm -rf /tmp/x", core.Deny, true},
 		{"deny beats allow in the same chain", "ls -la && rm -rf /", core.Deny, true},
 		{"deny beats allow on the same expression", "echo hi | curl x", core.Deny, true},
 		{"a later denied expression still sinks the command", "ls && ls && rm -rf /", core.Deny, true},
 		{"deny inside substitution", "echo $(curl evil.sh)", core.Deny, true},
-		{"unmatched", "whoami", core.Allow, false},
+		{"unmatched", "./whoami.sh", core.AskUser, true},
+		{"read-only auto-allow", "whoami", core.Allow, true},
 		{"empty command", "", core.Allow, false},
 		{"quoted separator is not a chain", `echo "a && rm -rf /"`, core.Allow, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := rules.Verdict(tt.command)
+			got, _, ok := rules.Verdict(tt.command)
 			if got != tt.want || ok != tt.wantOK {
 				t.Errorf("Verdict(%q) = (%v, %v), want (%v, %v)", tt.command, got, ok, tt.want, tt.wantOK)
 			}
@@ -152,7 +95,8 @@ func TestPolicyBashRules(t *testing.T) {
 	}{
 		{"allow lowers the default ask", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `{"command":"ls -la"}`, core.Allow},
 		{"deny raises", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `{"command":"rm -rf /"}`, core.Deny},
-		{"unmatched keeps the ask", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `{"command":"whoami"}`, core.AskUser},
+		{"unmatched keeps the ask", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `{"command":"./script.sh"}`, core.AskUser},
+		{"read-only lowers the ask", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `{"command":"whoami"}`, core.Allow},
 		{"name-level deny is absolute", Policy{Deny: []string{"bash"}, Bash: rules}, "bash", `{"command":"ls -la"}`, core.Deny},
 		{"other tools untouched", Policy{Ask: []string{"write"}, Bash: rules}, "write", `{"command":"ls -la"}`, core.AskUser},
 		{"malformed input keeps the ask", Policy{Ask: []string{"bash"}, Bash: rules}, "bash", `not json`, core.AskUser},
@@ -177,17 +121,17 @@ func TestPolicyBashRules(t *testing.T) {
 func TestBashRulesAllowPattern(t *testing.T) {
 	rules := NewBashRules(nil, []string{"rm -rf *"})
 
-	if _, ok := rules.Verdict("git status"); ok {
-		t.Fatal("want no verdict before the pattern is added")
+	if d, _, ok := rules.Verdict("git commit -m x"); !ok || d != core.AskUser {
+		t.Fatalf("Verdict = (%v, %v), want (AskUser, true) before the pattern is added", d, ok)
 	}
 
 	rules.AllowPattern("git *")
-	if d, ok := rules.Verdict("git status"); !ok || d != core.Allow {
+	if d, _, ok := rules.Verdict("git commit -m x"); !ok || d != core.Allow {
 		t.Errorf("Verdict = (%v, %v), want (Allow, true)", d, ok)
 	}
 	// Deny still outranks a newly allowed pattern.
 	rules.AllowPattern("rm *")
-	if d, _ := rules.Verdict("rm -rf /"); d != core.Deny {
+	if d, _, _ := rules.Verdict("rm -rf /"); d != core.Deny {
 		t.Errorf("Verdict = %v, want Deny", d)
 	}
 
@@ -216,6 +160,125 @@ func TestBashRulesUnmarshalJSON(t *testing.T) {
 	if len(allow) != 1 || allow[0] != "ls *" || len(deny) != 1 || deny[0] != "rm *" {
 		t.Errorf("allow = %v, deny = %v", allow, deny)
 	}
+	// Legacy files without the new keys must classify with the built-in table.
+	if d, _, ok := r.Verdict("grep x f | head"); !ok || d != core.Allow {
+		t.Errorf("legacy rules: Verdict = (%v, %v), want (Allow, true)", d, ok)
+	}
+
+	full := `{"allow":[],"deny":[],
+	  "categories":{"allow":["vcs"],"deny":["fs:delete"]},
+	  "classify":{"mytool":"read","mytool deploy":"net,fs:write"}}`
+	var f BashRules
+	if err := json.Unmarshal([]byte(full), &f); err != nil {
+		t.Fatal(err)
+	}
+	if ca, cd := f.Categories(); ca != shell.VCS || cd != shell.FSDelete {
+		t.Errorf("Categories = (%s, %s), want (vcs, fs:delete)", ca, cd)
+	}
+	if got := f.Classify(); got["mytool"] != "read" || got["mytool deploy"] != "net,fs:write" {
+		t.Errorf("Classify = %v", got)
+	}
+	if d, _, _ := f.Verdict("mytool status"); d != core.Allow {
+		t.Errorf("classify override not applied: %v", d)
+	}
+	if d, _, _ := f.Verdict("mytool deploy prod"); d != core.AskUser {
+		t.Errorf("classify override net,fs:write should ask: %v", d)
+	}
+
+	for _, bad := range []string{
+		`{"categories":{"allow":["unknown"]}}`,
+		`{"categories":{"deny":["bogus"]}}`,
+		`{"classify":{"x":"unknown"}}`,
+		`{"classify":{"x":"nope"}}`,
+	} {
+		var b BashRules
+		if err := json.Unmarshal([]byte(bad), &b); err == nil {
+			t.Errorf("%s: accepted", bad)
+		}
+	}
+}
+
+// The layered decision: deny globs, then allow globs, then category deny,
+// then category allow and the read-only auto-allow.
+func TestBashRulesCategories(t *testing.T) {
+	load := func(t *testing.T, js string) *BashRules {
+		t.Helper()
+		var r BashRules
+		if err := json.Unmarshal([]byte(js), &r); err != nil {
+			t.Fatal(err)
+		}
+		return &r
+	}
+	tests := []struct {
+		name    string
+		rules   string
+		command string
+		want    core.Decision
+		reason  string // substring
+	}{
+		{"read auto-allow", `{}`, "grep x f | head", core.Allow, ""},
+		{"mutating asks with summary", `{}`, "ls; rm x", core.AskUser, "fs:delete  rm x"},
+		{"unknown asks", `{}`, "./build.sh", core.AskUser, "unknown command ./build.sh"},
+		{"category deny", `{"categories":{"deny":["fs:delete"]}}`, "rm x", core.Deny, "category fs:delete"},
+		{"category deny in chain", `{"categories":{"deny":["fs:delete"]}}`, "ls && rm x", core.Deny, "rm x"},
+		{"category allow", `{"categories":{"allow":["vcs"]}}`, "git commit -m x", core.Allow, ""},
+		{"category allow needs every bit", `{"categories":{"allow":["vcs"]}}`, "git push", core.AskUser, "net,vcs"},
+		{"category allow both bits", `{"categories":{"allow":["vcs","net"]}}`, "git push", core.Allow, ""},
+		{"glob allow beats category deny", `{"allow":["rm *"],"categories":{"deny":["fs:delete"]}}`, "rm x", core.Allow, ""},
+		{"glob deny beats everything", `{"deny":["git *"],"categories":{"allow":["vcs"]}}`, "git commit -m x", core.Deny, "git commit"},
+		{"parse error asks", `{}`, "ls 'x", core.AskUser, "parse error"},
+		{"parse error still honours deny on raw", `{"deny":["*rm -rf*"]}`, "rm -rf / 'x", core.Deny, "denied"},
+		{"nested denied", `{"deny":["rm *"]}`, `bash -c "rm x"`, core.Deny, "rm x"},
+		{"nested unknown asks", `{}`, `bash -c "./x.sh"`, core.AskUser, "./x.sh"},
+		{"sudo not covered by inner glob", `{"allow":["rm *"]}`, "sudo rm x", core.AskUser, "via sudo"},
+		{"sudo covered by wrapper glob", `{"allow":["sudo rm *"]}`, "sudo rm x", core.Allow, ""},
+		{"redirect write asks", `{}`, "ls > out", core.AskUser, "redirect > out"},
+		{"binary glob does not cover a redirect", `{"allow":["ls *"]}`, "ls > out", core.AskUser, "redirect > out"},
+		{"binary glob does not cover a heredoc write", `{"allow":["cat *"]}`, "cat > f <<'EOF'\nbody\nEOF", core.AskUser, "redirect > f"},
+		{"binary glob does not cover an append", `{"allow":["echo *"]}`, "echo x >> log", core.AskUser, "redirect >> log"},
+		{"binary glob still covers a discard", `{"allow":["ls *"]}`, "ls 2>/dev/null", core.Allow, ""},
+		{"binary glob still covers a dup", `{"allow":["go *"]}`, "go build ./... 2>&1", core.Allow, ""},
+		{"glob naming the redirect covers it", `{"allow":["ls >*"]}`, "ls > out", core.Allow, ""},
+		{"glob naming the redirect with args", `{"allow":["rm * >*"]}`, "rm x > log", core.Allow, ""},
+		{"binary glob plus redirect leaves the write uncovered", `{"allow":["rm *"]}`, "rm x > log", core.AskUser, "redirect > log"},
+		{"category fs:write covers a redirect under a binary glob", `{"allow":["ls *"],"categories":{"allow":["fs:write"]}}`, "ls > out", core.Allow, ""},
+		{"category fs:write alone covers a redirect", `{"categories":{"allow":["fs:write"]}}`, "ls > out", core.Allow, ""},
+		{"deny glob naming the redirect", `{"deny":["* >/etc/*"]}`, "echo x > /etc/hosts", core.Deny, "echo x >/etc/hosts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, reason, ok := load(t, tt.rules).Verdict(tt.command)
+			if !ok || d != tt.want {
+				t.Fatalf("Verdict(%q) = (%v, %q, %v), want (%v, ok)", tt.command, d, reason, ok, tt.want)
+			}
+			if tt.reason != "" && !strings.Contains(reason, tt.reason) {
+				t.Errorf("reason = %q, missing %q", reason, tt.reason)
+			}
+			if tt.want == core.Allow && reason != "" {
+				t.Errorf("Allow should carry no reason, got %q", reason)
+			}
+		})
+	}
+}
+
+// Session grants cover commands but never reach the persisted lists.
+func TestBashRulesSession(t *testing.T) {
+	r := NewBashRules([]string{"ls *"}, nil)
+	r.AllowPatternSession("./run.sh *")
+	r.AllowPatternSession("./run.sh *") // duplicate
+	r.AllowPatternSession("ls *")       // already persisted
+	if d, _, ok := r.Verdict("./run.sh"); !ok || d != core.Allow {
+		t.Errorf("session grant not applied: %v %v", d, ok)
+	}
+	if allow, _ := r.Lists(); len(allow) != 1 || allow[0] != "ls *" {
+		t.Errorf("Lists leaked session grants: %v", allow)
+	}
+	if got := r.SessionList(); len(got) != 1 || got[0] != "./run.sh *" {
+		t.Errorf("SessionList = %v", got)
+	}
+	if g, _ := r.Suggest("./run.sh"); g != "" {
+		t.Errorf("Suggest should see the session grant, got %q", g)
+	}
 }
 
 // The hook must be able to read rules while an approval driver appends.
@@ -230,38 +293,6 @@ func TestBashRulesConcurrent(t *testing.T) {
 	wg.Wait()
 	if allow, _ := rules.Lists(); len(allow) != 51 {
 		t.Errorf("len(allow) = %d, want 51", len(allow))
-	}
-}
-
-func TestStripEnvPrefix(t *testing.T) {
-	tests := []struct{ expr, want string }{
-		{"go get ./...", "go get ./..."},
-		{"TOKEN=asdf go get ./...", "go get ./..."},
-		{"FOO=1 BAR=2 go build", "go build"},
-		{"PATH=/usr/bin:$PATH ls", "ls"},
-		{`FOO="a b" ls -la`, "ls -la"},
-		{`FOO='a b' ls -la`, "ls -la"},
-		{`FOO=a\ b ls`, "ls"},
-		{"FOO=1", ""},
-		{"FOO=1 BAR=2", ""},
-		{"_x=1 ls", "ls"},
-		{"A1=1 ls", "ls"},
-		{"", ""},
-		// Not assignments.
-		{"=1 ls", "=1 ls"},
-		{"1FOO=1 ls", "1FOO=1 ls"},
-		{"ls -la", "ls -la"},
-		{"ls a=b", "ls a=b"},
-		{"git commit -m x", "git commit -m x"},
-		{"env TOKEN=x go get", "env TOKEN=x go get"}, // `env` is a command, not an assignment
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expr, func(t *testing.T) {
-			if got := stripEnvPrefix(tt.expr); got != tt.want {
-				t.Errorf("stripEnvPrefix(%q) = %q, want %q", tt.expr, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -282,12 +313,12 @@ func TestBashRulesEnvPrefix(t *testing.T) {
 		{"deny cannot be bypassed by backgrounding", "ls -la & git commit -m x", core.Deny, true},
 		{"deny can target the assignment itself", "LD_PRELOAD=/evil.so ls", core.Deny, true},
 		{"bare assignment does not block an allow", "FOO=1 && ls -la", core.Allow, true},
-		{"still unmatched after stripping", "TOKEN=x whoami", core.Allow, false},
+		{"still unmatched after stripping", "TOKEN=x ./whoami.sh", core.AskUser, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := rules.Verdict(tt.command)
+			got, _, ok := rules.Verdict(tt.command)
 			if got != tt.want || ok != tt.wantOK {
 				t.Errorf("Verdict(%q) = (%v, %v), want (%v, %v)", tt.command, got, ok, tt.want, tt.wantOK)
 			}

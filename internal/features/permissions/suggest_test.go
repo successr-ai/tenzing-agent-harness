@@ -1,6 +1,8 @@
 package permissions
 
 import (
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
@@ -15,41 +17,30 @@ func TestSuggest(t *testing.T) {
 		glob    string
 		reason  string
 	}{
-		{"bare binary", nil, "head -40 foo_test.go", "head *", ""},
-		{"git subcommand", nil, "git status --porcelain=v1", "git status *", ""},
-		{"go subcommand", nil, "go build ./...", "go build *", ""},
-		{"sed read flag", nil, "sed -n 825,833p schema.go", "sed -n *", ""},
+		{"unknown binary", nil, "./run_tests.sh -v", "./run_tests.sh *", ""},
+		{"git subcommand", nil, "git commit -m x", "git commit *", ""},
+		{"go subcommand", nil, "go get ./...", "go get *", ""},
 		{"sed write flag", nil, "sed -i s/a/b/ f", "sed -i *", ""},
 		{"npx nested tool", nil, "npx ng build --configuration development", "npx ng *", ""},
+		{"wrapper keeps inner binary", nil, "sudo rm -rf x", "sudo rm *", ""},
+		{"xargs keeps inner binary", nil, "find . -name x | xargs rm", "xargs rm *", ""},
 		{
-			"first uncovered expression",
-			[]string{"grep *"},
-			`grep -n '"idp_id"' schema.go | head; sed -n 825,833p schema.go`,
-			"head *", "",
+			"first uncovered mutating segment",
+			[]string{"./a.sh *"},
+			`./a.sh | head; ./b.sh; rm x`,
+			"./b.sh *", "",
 		},
 		{
-			"skips covered, keeps order",
-			[]string{"grep *", "head *"},
-			"grep -n x f | head -30; echo ---; sed -n 1,5p g",
-			"echo *", "",
-		},
-		{
-			"cd chain",
+			"read segments never need a rule",
 			nil,
-			`cd services/megatron-api && go build ./... 2>&1 | head -20`,
-			"cd *", "",
-		},
-		{
-			"stderr redirect is not a write",
-			[]string{"cd *"},
-			`cd svc && go vet ./... 2>&1 | head -20`,
-			"go vet *", "",
+			"grep -n x f | head -30; echo ---; ./deploy.sh",
+			"./deploy.sh *", "",
 		},
 		{
 			"env prefix stripped",
 			nil,
-			`GOFLAGS="-tags=integration" go test ./...`,
-			"go test *", "",
+			`GOFLAGS="-tags=integration" go install ./...`,
+			"go install *", "",
 		},
 		{
 			"file write suggests nothing",
@@ -70,20 +61,35 @@ func TestSuggest(t *testing.T) {
 			"", "writes a file — approve case by case",
 		},
 		{
-			"fully covered",
-			[]string{"grep *", "head *"},
-			"grep -n x f | head -3",
+			"binary write is suggestable",
+			nil,
+			"cp a b",
+			"cp *", "",
+		},
+		{
+			"fully covered by globs",
+			[]string{"./a.sh *"},
+			"./a.sh | head -3",
 			"", "already covered by the allow list",
 		},
+		{"read-only needs nothing", nil, "grep -n x f | head -3", "", "already covered by the allow list"},
 		{"empty command", nil, "", "", "already covered by the allow list"},
 		{
-			"command substitution body is its own expression",
-			[]string{"git *"},
-			"git log $(git rev-parse HEAD)",
-			"", "already covered by the allow list",
+			"command substitution body is its own segment",
+			nil,
+			"echo $(./gen.sh)",
+			"./gen.sh *", "",
 		},
+		{"nested shell", nil, `bash -c "./x.sh"`, "./x.sh *", ""},
+		{
+			"binary glob leaves the redirect write to a human",
+			[]string{"cat *"},
+			"cat > f <<'EOF'\nbody\nEOF",
+			"", "writes a file — approve case by case",
+		},
+		{"parse error", nil, "ls 'x", "", "could not parse command — approve case by case"},
+		{"non-literal command word", nil, "$CMD x", "", "command is not statically analysable — approve case by case"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			glob, reason := NewBashRules(tt.allow, nil).Suggest(tt.command)
@@ -98,7 +104,7 @@ func TestSuggest(t *testing.T) {
 // A suggestion must actually cover the expression it was proposed for:
 // accepting it has to make progress, or the same prompt returns forever.
 func TestSuggestConverges(t *testing.T) {
-	const cmd = `cd svc && go build ./... 2>&1 | head -20; echo "BUILD EXIT: $?"`
+	const cmd = `cd svc && ./gen.sh 2>&1 | head -20; sudo rm -rf out; echo "EXIT: $?"`
 	r := NewBashRules(nil, nil)
 
 	var globs []string
@@ -114,32 +120,46 @@ func TestSuggestConverges(t *testing.T) {
 		r.AllowPattern(glob)
 	}
 
-	if d, ok := r.Verdict(cmd); !ok || d != core.Allow {
+	if d, _, ok := r.Verdict(cmd); !ok || d != core.Allow {
 		t.Fatalf("after %v the command still prompts (decision %v, ok %v)", globs, d, ok)
+	}
+	if want := []string{"./gen.sh *", "sudo rm *"}; !slices.Equal(globs, want) {
+		t.Errorf("converged on %q, want %q", globs, want)
 	}
 }
 
 // A discard redirect is not a file write: 2>/dev/null is too common to cost
 // an approval every time.
 func TestSuggestDiscardRedirect(t *testing.T) {
-	glob, reason := NewBashRules(nil, nil).Suggest("ls -d migrations/ 2>/dev/null")
-	if glob != "ls *" || reason != "" {
-		t.Errorf("Suggest = (%q, %q), want (\"ls *\", \"\")", glob, reason)
+	glob, reason := NewBashRules(nil, nil).Suggest("./probe.sh -d migrations/ 2>/dev/null")
+	if glob != "./probe.sh *" || reason != "" {
+		t.Errorf("Suggest = (%q, %q), want (\"./probe.sh *\", \"\")", glob, reason)
 	}
 }
 
-// A suggestion has to cover the expression it was derived from, including an
+// A suggestion has to cover the segment it was derived from, including an
 // argument-less one — otherwise accepting it makes no progress and the same
 // prompt returns forever.
 func TestSuggestCoversArgumentlessExpression(t *testing.T) {
 	r := NewBashRules(nil, nil)
-	glob, _ := r.Suggest("grep -n x f | head")
+	glob, _ := r.Suggest("./a.sh -n x | ./b.sh")
 	r.AllowPattern(glob)
-	if glob, _ = r.Suggest("grep -n x f | head"); glob != "head *" {
-		t.Fatalf("second suggestion = %q, want \"head *\"", glob)
+	if glob, _ = r.Suggest("./a.sh -n x | ./b.sh"); glob != "./b.sh *" {
+		t.Fatalf("second suggestion = %q, want \"./b.sh *\"", glob)
 	}
 	r.AllowPattern(glob)
-	if d, ok := r.Verdict("grep -n x f | head"); !ok || d != core.Allow {
-		t.Errorf("bare `head` still uncovered by %q (decision %v, ok %v)", "head *", d, ok)
+	if d, _, ok := r.Verdict("./a.sh -n x | ./b.sh"); !ok || d != core.Allow {
+		t.Errorf("bare `./b.sh` still uncovered by %q (decision %v, ok %v)", "./b.sh *", d, ok)
+	}
+}
+
+// Category-allowed segments do not need a glob either.
+func TestSuggestSkipsCategoryAllowed(t *testing.T) {
+	var r BashRules
+	if err := json.Unmarshal([]byte(`{"categories":{"allow":["vcs"]}}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if glob, _ := r.Suggest("git commit -m x && git push"); glob != "git push *" {
+		t.Errorf("Suggest = %q, want \"git push *\"", glob)
 	}
 }

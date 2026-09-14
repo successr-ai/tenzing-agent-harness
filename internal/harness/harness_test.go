@@ -626,10 +626,11 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 	}
 }
 
-// WithReadOnly: mutating tools (bash) are denied instantly with a
-// "read-only mode" error result — no approval event ever fires — while
-// read-only-marked tools (Read, advisor, repl — its sandbox blocks file
-// writes) and spawn_agent (children carry the same gate) execute normally.
+// WithReadOnly: mutating tools (a bash command that deletes) are denied
+// instantly with a "read-only mode" error result — no approval event ever
+// fires — while read-only-marked tools (Read, advisor, repl — its sandbox
+// blocks file writes), a bash command the shell classifier proves read-only,
+// and spawn_agent (children carry the same gate) execute normally.
 func TestHarnessReadOnlyMode(t *testing.T) {
 	redirectHome(t)
 	dir := t.TempDir()
@@ -639,10 +640,13 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 	}
 
 	agent := newScriptedAgent(
-		toolStep("bash", jsonInput(map[string]any{"command": "ls"})),
+		toolStep("bash", jsonInput(map[string]any{"command": "rm -rf " + dir})),
 		toolStep("repl", jsonInput(map[string]any{"code": "1"})),
 		toolStep("Read", jsonInput(map[string]any{"file_path": file})),
 		toolStep("advisor", jsonInput(map[string]any{"plan": "a plan"})),
+		// After advisor (its write-gate would otherwise deny an unmarked
+		// tool): a bash command the shell classifier proves read-only runs.
+		toolStep("bash", jsonInput(map[string]any{"command": "echo read-ok | cat"})),
 		toolStep("spawn_agent", jsonInput(map[string]any{"task": "child task"})),
 		finalStep("done"),
 	)
@@ -690,8 +694,8 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 
 	// Each call's tool result lands in the next call's last message.
 	calls := agent.capturedCalls()
-	if len(calls) != 6 {
-		t.Fatalf("agent calls = %d, want 6", len(calls))
+	if len(calls) != 7 {
+		t.Fatalf("agent calls = %d, want 7", len(calls))
 	}
 	lastOutput := func(c capturedCall) string {
 		msg := c.Messages[len(c.Messages)-1]
@@ -701,8 +705,11 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 		}
 		return out.String()
 	}
-	if got := lastOutput(calls[1]); !strings.Contains(got, "read-only mode") {
-		t.Errorf("bash result = %q, want read-only mode denial", got)
+	if got := lastOutput(calls[1]); !strings.Contains(got, "read-only mode") || !strings.Contains(got, "fs:delete") {
+		t.Errorf("bash rm result = %q, want read-only mode denial naming fs:delete", got)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Errorf("fixture deleted despite read-only mode: %v", err)
 	}
 	// repl is marked read-only (sandbox blocks file writes; only in-memory
 	// blackboard state mutates), so it executes rather than being denied.
@@ -715,7 +722,10 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 	if got := lastOutput(calls[4]); strings.Contains(got, "read-only mode") {
 		t.Errorf("advisor result = %q, want execution, not denial", got)
 	}
-	if got := lastOutput(calls[5]); !strings.Contains(got, "child-done") {
+	if got := lastOutput(calls[5]); !strings.Contains(got, "read-ok") || strings.Contains(got, "read-only mode") {
+		t.Errorf("bash echo result = %q, want execution of a read-only command", got)
+	}
+	if got := lastOutput(calls[6]); !strings.Contains(got, "child-done") {
 		t.Errorf("spawn_agent result = %q, want child answer", got)
 	}
 }

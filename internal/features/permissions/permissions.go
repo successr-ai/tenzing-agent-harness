@@ -23,9 +23,10 @@ type Policy struct {
 	// default).
 	AskOrigins []string
 	Default    core.Decision // decision for unlisted tools
-	// Bash, when non-nil, refines the decision for the bash tool by matching
-	// the command itself (see BashRules). It can lower an AskUser to Allow
-	// or raise it to Deny, but never overrides a name-level Deny.
+	// Bash, when non-nil, refines the decision for the bash tool by parsing
+	// and classifying the command itself (see BashRules). It can lower an
+	// AskUser to Allow or raise it to Deny, but never overrides a name-level
+	// Deny.
 	Bash *BashRules
 }
 
@@ -103,15 +104,23 @@ func (e *Ext) OnToolCall(_ context.Context, tcc *core.ToolCallContext) error {
 	// stops escalating) and a denied one is blocked outright.
 	// The tool name is matched case-insensitively: a harness that registers
 	// the tool as "Bash" gets the same command rules as one using "bash".
+	fromVerdict := false
 	if e.bash != nil && strings.EqualFold(name, "bash") && decision != core.Deny {
-		if d, ok := e.bash.Verdict(bashCommand(tcc.Call.Input)); ok {
-			decision = d
-			reason = "bash command denied by permission policy"
+		if d, r, ok := e.bash.Verdict(bashCommand(tcc.Call.Input)); ok {
+			decision, fromVerdict = d, r != ""
+			if fromVerdict {
+				reason = r
+			}
 		}
 	}
 
-	if decision > tcc.Decision {
+	switch {
+	case decision > tcc.Decision:
 		tcc.Decision = decision
+		tcc.Reason = reason
+	case fromVerdict && decision == tcc.Decision && decision != core.Allow:
+		// An earlier hook already asked; the analysis summary is the more
+		// useful reason for the prompt.
 		tcc.Reason = reason
 	}
 	return nil
