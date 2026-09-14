@@ -137,6 +137,7 @@ var specials = map[string]special{
 	"gawk":  awkSpecial,
 	"mawk":  awkSpecial,
 	"rsync": rsyncSpecial,
+	"curl":  curlSpecial,
 }
 
 // staticArgs returns the static values of args (non-static dropped) and
@@ -276,6 +277,67 @@ func awkSpecial(argv []Arg) (Class, []string, bool) {
 	return Read, []string{"awk"}, true
 }
 
+// curlSpecial: net; -o/--output adds fs:write unless the target is a /dev
+// sink (the `-s -o /dev/null -w '%{http_code}'` health-check idiom), and
+// -O/--remote-name always writes (the filename comes from the URL).
+func curlSpecial(argv []Arg) (Class, []string, bool) {
+	c := Net
+	why := []string{"curl: net"}
+	write := func(target string) {
+		c |= FSWrite
+		why = append(why, "curl -o "+target)
+	}
+	args := argv[1:]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !a.Static {
+			continue
+		}
+		v := a.Value
+		switch {
+		case v == "-O" || v == "--remote-name" || v == "--remote-name-all":
+			write("(remote name)")
+		case v == "--output-dir" || strings.HasPrefix(v, "--output-dir="):
+			write(v)
+		case v == "--output" || v == "-o":
+			if i+1 < len(args) {
+				i++
+				if t := args[i]; !t.Static {
+					write("(non-literal)")
+				} else if !devSinks[t.Value] {
+					write(t.Value)
+				}
+			}
+		case strings.HasPrefix(v, "--output="):
+			if t := strings.TrimPrefix(v, "--output="); !devSinks[t] {
+				write(t)
+			}
+		case strings.HasPrefix(v, "-") && !strings.HasPrefix(v, "--") && len(v) > 2:
+			// Short cluster: -sSLo FILE (o last, value follows) or -oFILE.
+			if j := strings.IndexByte(v[1:], 'o'); j >= 0 {
+				rest := v[2+j:]
+				switch {
+				case rest != "":
+					if !devSinks[rest] {
+						write(rest)
+					}
+				case i+1 < len(args):
+					i++
+					if t := args[i]; !t.Static {
+						write("(non-literal)")
+					} else if !devSinks[t.Value] {
+						write(t.Value)
+					}
+				}
+			}
+			if strings.Contains(v[1:], "O") {
+				write("(remote name)")
+			}
+		}
+	}
+	return c, why, true
+}
+
 // rsyncSpecial: always a write; a remote spec adds net.
 func rsyncSpecial(argv []Arg) (Class, []string, bool) {
 	c := FSWrite
@@ -384,7 +446,6 @@ func Builtin() Table {
 		"terraform plan", "terraform init", "terraform apply", "terraform destroy", "terraform import",
 		"terraform refresh", "terraform state", "gh api", "git ls-remote", "git fetch", "git remote add",
 		"git remote set-url", "git remote update", "git remote prune", "aws s3 ls", "aws sts get-caller-identity")
-	add(FSWrite|Net, "curl -o", "curl -O", "curl --output", "curl --remote-name", "curl --output-dir")
 
 	// Deleters.
 	add(FSDelete, "rm", "rmdir", "unlink", "shred", "trash", "go clean", "cargo clean", "npm cache clean",
