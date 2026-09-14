@@ -75,6 +75,9 @@ const indexHTML = `<!DOCTYPE html>
   .diff .meta { opacity: 0.55; }
   .expand { cursor: pointer; text-decoration: underline dotted; }
   .msg.system { color: var(--fg-dim); font-size: 0.75rem; }
+.msg.steer { color: var(--blue); padding-left: 1rem; opacity: 0.5; }
+.msg.steer::before { content: '↪ '; }
+.msg.steer.injected { opacity: 1; }
   .msg.streaming { color: var(--fg); }
   .msg.streaming::after { content: '▊'; animation: blink 1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }
@@ -422,11 +425,13 @@ function renderStatus() {
   statusEl.append(contextWindow > 0 ? ' · ' + tk : tk);
 }
 
+// setRunning flips the composer between two modes: idle sends a new turn,
+// running steers the current one. The textarea stays live either way.
 function setRunning(v) {
   running = v;
-  sendBtn.disabled = v;
+  sendBtn.textContent = v ? 'steer' : 'send';
   cancelBtn.style.display = v ? 'inline-block' : 'none';
-  queryEl.disabled = v;
+  queryEl.placeholder = v ? 'steer the agent...' : 'ask something...';
   if (!v) queryEl.focus();
 }
 
@@ -769,9 +774,19 @@ es.addEventListener('cost', e => {
   renderStatus();
 });
 
+// pendingSteers holds the dimmed ↪ lines typed mid-turn, oldest first. Each
+// one turns solid when the loop reports it injected; a message steered from
+// another client has no pending line and is added already solid.
+let pendingSteers = [];
+
 es.addEventListener('steering.injected', e => {
   const d = JSON.parse(e.data);
-  addMsg('system', '↪ steering injected: ' + d.data.message);
+  const i = pendingSteers.findIndex(el => el.textContent === d.data.message);
+  if (i >= 0) {
+    pendingSteers.splice(i, 1)[0].classList.add('injected');
+  } else {
+    addMsg('steer injected', d.data.message);
+  }
 });
 
 es.addEventListener('llm.retry', e => {
@@ -840,6 +855,7 @@ es.addEventListener('status', e => {
     // lives on the ✻ line; this only clears a leftover tool phase.
     statusNote = '';
     renderStatus();
+    setRunning(true);
   } else {
     statusNote = '';
     finalizeThinking(); // backstop: no path ends a turn with the timer running
@@ -1040,7 +1056,8 @@ queryEl.addEventListener('blur', closeMenu);
 
 async function send() {
   const q = queryEl.value.trim();
-  if (!q || running) return;
+  if (!q) return;
+  if (running) return steer(q);
 
   // Action commands never reach the agent. An unknown /name still does:
   // the harness's own prompt templates live in that namespace.
@@ -1060,6 +1077,50 @@ async function send() {
   addMsg('user', q + (images.length ? ' [' + images.length + ' image' + (images.length > 1 ? 's' : '') + ']' : ''));
   queryEl.value = '';
   autosize();
+  await submitQuery(q, images);
+}
+
+// steer sends plain text into the running turn. Commands and images are
+// idle-only. A 400 means the turn ended under us: resend as a normal query so
+// the message isn't lost.
+async function steer(q) {
+  const parsed = parseCommand(q);
+  if (parsed && parsed.cmd) { addMsg('error', 'commands unavailable while running'); return; }
+  if (pendingImages.length) { addMsg('error', 'images cannot be attached mid-turn'); return; }
+  const el = addMsg('steer', q);
+  pendingSteers.push(el);
+  queryEl.value = '';
+  autosize();
+  let res;
+  try {
+    res = await fetch('/steer', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: q}),
+    });
+  } catch(e) {
+    dropPending(el);
+    addMsg('error', e.message);
+    queryEl.value = q;
+    return;
+  }
+  if (res.ok) return;
+  dropPending(el);
+  if (res.status === 400) {
+    addMsg('user', q);
+    await submitQuery(q, []);
+    return;
+  }
+  addMsg('error', await res.text());
+  queryEl.value = q;
+}
+
+function dropPending(el) {
+  el.remove();
+  pendingSteers = pendingSteers.filter(p => p !== el);
+}
+
+async function submitQuery(q, images) {
   setRunning(true);
   streamEl = null;
   thinkEl = null;
