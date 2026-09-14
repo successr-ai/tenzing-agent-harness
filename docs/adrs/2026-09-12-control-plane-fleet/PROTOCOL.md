@@ -19,7 +19,7 @@ upgrade and reply `welcome`:
 
 | # | Direction | Message |
 |---|-----------|---------|
-| 1 | agent → plane | `{type:"hello", protocol:"1", pid, cwd, model, capabilities, last_turn?}` |
+| 1 | agent → plane | `{type:"hello", protocol:"1", pid, cwd, model, capabilities, last_turn?, conversation_id?}` |
 | 2 | plane → agent | `{type:"welcome", agent_id}` |
 
 - `protocol` — `"1"`. Mismatch: the plane replies `{type:"error", code:"protocol_version", detail}` and closes; the agent treats it as **transient** (retry with backoff; a server upgrade may follow).
@@ -32,6 +32,10 @@ upgrade and reply `welcome`:
   `{id, outcome:"cancelled_disconnect"}`. On a first connect it is absent. The agent
   sends `hello` and **resumes immediately**: it is idle and accepts commands without
   waiting for permission.
+- `conversation_id` — the harness's active conversation id, the value the plane passes
+  to `--resume` to relaunch this agent against the same history. Present when session
+  persistence is on; absent when it is disabled. Authoritative over any id the plane
+  pre-assigned with `--conversation-id` (it is what the harness actually settled on).
 
 After `welcome`, the agent is registered; the plane MAY send commands at any time.
 
@@ -41,10 +45,15 @@ After `welcome`, the agent is registered; the plane MAY send commands at any tim
 |------|--------|------|
 | `event` | `{turn_id, envelope}` | Every harness event of the running turn. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). |
 | `approval_request` | `{turn_id, id, tool, input}` | A mutating tool call needs approval. The turn blocks until `approve` or cancellation/timeout. |
-| `result` | `{turn_id, id, outcome, answer?, error?, denied_tools}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
+| `result` | `{turn_id, id, outcome, answer?, error?, denied_tools, files_touched?}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
+| `shutdown_ack` | `{id}` | Reply to `shutdown`, after the running turn's `result` (if any). The agent closes the connection normally and exits 0 right after. |
 
 `result.denied_tools` counts tool calls denied by the permission policy during the
-turn (mirrors print mode's stderr summary).
+turn (mirrors print mode's stderr summary). `result.files_touched` lists the paths of
+**successful** Read/Edit/Write tool calls during the turn (main agent and subagents),
+deduplicated in first-seen order; omitted when empty. Denied and failed calls touched
+nothing and are excluded. It is an access summary for the plane's judge, not a diff —
+the plane reads the sandbox for content.
 
 ## 3. Plane → agent messages (commands)
 
@@ -53,9 +62,10 @@ turn (mirrors print mode's stderr summary).
 | `query` | `{id, query, images?}` | Start a turn (queued if one is running; FIFO). Reply: `result` when the turn ends, with this `id`. `images` is the queryInput image array (media_type + base64 data). |
 | `steer` | `{id, message}` | Inject mid-turn steering. Acknowledged by an `event` (SteeringInjected) — no dedicated reply. |
 | `cancel` | `{id}` | Cancel the running turn (and drop queued ones). The turn ends with `result{outcome:"cancelled"}`. |
-| `approve` | `{id, call_id, approved, glob?}` | Answer a pending `approval_request`. `glob` persists an allow rule when `approved` (serve-mode "allow always" semantics). |
+| `approve` | `{id, call_id, approved, glob?}` | Answer a pending `approval_request`. `glob` adds a bash allow rule when `approved` ("allow always"). Serve mode persists it to settings.json; connect mode keeps it **in memory for the process lifetime** unless `connect.ephemeral_grants: false` (then it persists like serve mode). |
 | `set-model` | `{id, model}` | Switch the main model (same validation as POST /model). Errors: `{type:"error", id, detail}`. |
 | `set-thinking` | `{id, enabled}` | Toggle reasoning. |
+| `shutdown` | `{id}` | Graceful teardown: cancel the running turn (it reports `result{outcome:"cancelled"}`) and drop queued ones, then reply `shutdown_ack{id}`, close normally, and exit 0. The agent does not reconnect. |
 
 Correlation: every command's `id` is echoed on the message that answers it. Commands
 that produce no dedicated reply (`steer`) are acknowledged by their side effects.
@@ -81,6 +91,11 @@ plane's responsibility.
   protocol handshake after the first successful dial — the process exits non-zero so
   the plane can distinguish "bad config, don't restart" from "plane unreachable,
   agent still dialing." Transient dial failures never exit.
+- **Shutdown**: `shutdown` is the deterministic teardown — cancelled `result` (if a turn
+  was running), then `shutdown_ack`, then a normal close; the process flushes session
+  persistence and exits 0. SIGTERM is the equivalent without an ack (same cancel, same
+  flush, same exit code). Neither path reconnects. An agent older than this command
+  drops it as unknown (§6); the plane then falls back to SIGTERM.
 - **Backpressure**: a slow plane blocks the agent's write pump. Events buffer
   losslessly in an unbounded per-turn queue on the bus side; nothing drops. A
   connected-but-slow plane does NOT cancel the turn — only a *disconnected* one does.

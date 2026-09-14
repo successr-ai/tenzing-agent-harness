@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 	"github.com/tab58/huma-http-server/config"
@@ -194,6 +195,7 @@ func newRootCmd() *cobra.Command {
 	fl.StringVar(&cfg.ConnectURL, "connect", "", "control-plane mode: dial this ws:// or wss:// endpoint instead of listening (env TENZING_CONNECT; tenzing.yaml connect:)")
 	fl.StringVar(&cfg.ConnectToken, "connect-token", "", "bearer token for the control-plane upgrade request (env TENZING_CONNECT_TOKEN; tenzing.yaml connect.token)")
 	fl.DurationVar(&cfg.ConnectBackoff, "connect-backoff", 0, "reconnect delay base for connect mode, e.g. 2s (doubles to a 30s cap; default 1s; tenzing.yaml connect.backoff)")
+	fl.BoolVar(&cfg.ConnectEphemeralGrants, "connect-ephemeral-grants", true, "connect mode: keep runtime-approved bash globs in memory only; false persists them to settings.json (env TENZING_CONNECT_EPHEMERAL_GRANTS; tenzing.yaml connect.ephemeral_grants)")
 
 	return cmd
 }
@@ -233,6 +235,15 @@ func mergeEnv(cfg *cliConfig, env *Config, changed func(name string) bool, prese
 	if !changed("connect-token") {
 		if v := os.Getenv("TENZING_CONNECT_TOKEN"); v != "" {
 			cfg.ConnectToken = v
+		}
+	}
+	if !changed("connect-ephemeral-grants") {
+		if v := os.Getenv("TENZING_CONNECT_EPHEMERAL_GRANTS"); v != "" {
+			if b, err := strconv.ParseBool(v); err == nil {
+				cfg.ConnectEphemeralGrants = b
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: TENZING_CONNECT_EPHEMERAL_GRANTS=%q is not a boolean; ignored\n", v)
+			}
 		}
 	}
 }

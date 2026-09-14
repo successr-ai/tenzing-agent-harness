@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,6 +26,18 @@ func (e *FatalError) Unwrap() error { return e.Err }
 // maxBackoff caps the reconnect delay.
 const maxBackoff = 30 * time.Second
 
+// TurnReport is what RunTurn hands back: the material for the Result message.
+type TurnReport struct {
+	// Answer is the final text on success.
+	Answer string
+	// Err is the turn's failure; context.Canceled when the turn was stopped.
+	Err error
+	// Denied counts permission-denied tool calls during the turn.
+	Denied int
+	// FilesTouched lists paths of successful Read/Edit/Write calls.
+	FilesTouched []string
+}
+
 // Handlers is what the connect-mode wiring provides so the client can drive
 // the harness without importing it. The client owns the connection lifecycle
 // and cancels turns via per-turn contexts derived from connection liveness.
@@ -33,8 +46,8 @@ type Handlers struct {
 	// with ctx already tied to connection liveness: when the socket drops,
 	// the context cancels and the harness turn aborts (loop.go's clean
 	// "turn canceled" outcome). The client builds the Result from the
-	// return values.
-	RunTurn func(ctx context.Context, cmd *Query) (answer string, err error, denied int)
+	// report.
+	RunTurn func(ctx context.Context, cmd *Query) TurnReport
 	// Steer injects mid-turn input.
 	Steer func(message string) error
 	// Cancel stops the running turn (and drops queued ones).
@@ -49,6 +62,9 @@ type Handlers struct {
 	CurrentModel func() string
 	// SupportsVision reports whether the active model accepts images.
 	SupportsVision func() bool
+	// ConversationID reports the harness's active conversation id for hello;
+	// "" (or nil) omits the field. Optional.
+	ConversationID func() string
 	// OnDisconnect fires once per connection loss, after the in-flight
 	// turn has been cancelled. Optional.
 	OnDisconnect func()
@@ -86,8 +102,15 @@ type Client struct {
 	currentID  string             // correlation id of the running turn
 	connLost   chan struct{}      // closed by cancelInFlight; per-turn watcher
 	lastTurn   *LastTurn          // reported on the next hello
+	turnDone   chan struct{}      // closed when the running turn's result is queued
 	outbox     chan []byte        // upstream messages awaiting the write pump
 	connCtx    connCtxHolder      // the live connection's context (for SendEvent)
+
+	// shutdownReq carries the plane's shutdown command to the write pump once
+	// the running turn (if any) has queued its result; shuttingDown stops Run
+	// from reconnecting afterwards.
+	shutdownReq  chan Shutdown
+	shuttingDown atomic.Bool
 
 	dialTimeout time.Duration
 }
@@ -111,6 +134,7 @@ func New(opts Options, h Handlers) (*Client, error) {
 		opts:        opts,
 		h:           h,
 		outbox:      make(chan []byte, 1024),
+		shutdownReq: make(chan Shutdown, 1),
 		dialTimeout: opts.DialTimeout,
 	}, nil
 }
@@ -131,6 +155,9 @@ func (c *Client) hello() Hello {
 			Approvals: true,
 		},
 		LastTurn: lt,
+	}
+	if c.h.ConversationID != nil {
+		h.ConversationID = c.h.ConversationID()
 	}
 	return h
 }
@@ -258,7 +285,7 @@ func (c *Client) Run(ctx context.Context) error {
 	backoff := c.opts.Backoff
 	for {
 		err := c.dialAndServe(ctx)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || c.shuttingDown.Load() {
 			return nil
 		}
 		var fatal *FatalError
@@ -343,18 +370,32 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 	}()
 
 	// Write pump: single goroutine draining the outbox at connection speed.
+	// A shutdown request drains what is queued (the cancelled turn's result
+	// is already there), acks, closes normally, and ends the connection.
 	go func() {
+		write := func(b []byte) error {
+			wctx, wcancel := context.WithTimeout(connCtx, 10*time.Second)
+			defer wcancel()
+			return conn.Write(wctx, websocket.MessageText, b)
+		}
 		for {
 			select {
 			case b := <-c.outbox:
-				wctx, wcancel := context.WithTimeout(connCtx, 10*time.Second)
-				err := conn.Write(wctx, websocket.MessageText, b)
-				wcancel()
-				if err != nil {
+				if err := write(b); err != nil {
 					slog.Warn("wsclient: write failed; dropping connection", "error", err)
 					connCancel()
 					return
 				}
+			case sd := <-c.shutdownReq:
+				c.drainOutbox(write)
+				if ack, err := json.Marshal(ShutdownAck{Type: "shutdown_ack", ID: sd.ID}); err == nil {
+					if err := write(ack); err != nil {
+						slog.Warn("wsclient: write shutdown_ack failed", "error", err)
+					}
+				}
+				conn.Close(websocket.StatusNormalClosure, "shutdown")
+				connCancel()
+				return
 			case <-connCtx.Done():
 				return
 			}
@@ -365,6 +406,21 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 	connCancel()
 	<-connDone
 	return readErr
+}
+
+// drainOutbox writes every queued message without blocking for new ones.
+func (c *Client) drainOutbox(write func([]byte) error) {
+	for {
+		select {
+		case b := <-c.outbox:
+			if err := write(b); err != nil {
+				slog.Warn("wsclient: write during shutdown drain failed", "error", err)
+				return
+			}
+		default:
+			return
+		}
+	}
 }
 
 // readPump decodes plane→agent messages and dispatches them until the
@@ -434,7 +490,32 @@ func (c *Client) dispatch(ctx context.Context, msg any) {
 		if err := c.h.SetThinking(m.Enabled); err != nil {
 			c.send(ctx, Error{Type: "error", ID: m.ID, Code: "set_thinking", Detail: err.Error()})
 		}
+	case *Shutdown:
+		c.shutdown(*m)
 	}
+}
+
+// shutdown is the plane's graceful teardown: stop reconnecting, cancel the
+// running turn (its result reports "cancelled"), flush queued queries, then
+// hand the ack to the write pump once that result is queued. Run returns nil
+// after the connection ends, and the wiring's deferred harness shutdown
+// flushes session persistence.
+func (c *Client) shutdown(m Shutdown) {
+	if c.shuttingDown.Swap(true) {
+		return // a second shutdown is a no-op; the first is in progress
+	}
+	slog.Info("wsclient: shutdown requested by control plane", "id", m.ID)
+	c.mu.Lock()
+	done := c.turnDone
+	c.mu.Unlock()
+	c.cancelTurnContext()
+	c.h.Cancel()
+	go func() {
+		if done != nil {
+			<-done
+		}
+		c.shutdownReq <- m
+	}()
 }
 
 // executeQuery runs one turn synchronously in its own goroutine: the read
@@ -456,9 +537,13 @@ func (c *Client) executeQuery(ctx context.Context, q *Query) {
 	// connLost is closed by cancelInFlight when the connection drops, so the
 	// outcome classification below can tell "explicit cancel" from
 	// "disconnect" without racing the connection context's teardown.
+	// turnDone closes once the result is queued, so a shutdown can ack after
+	// it.
 	connLost := make(chan struct{})
+	turnDone := make(chan struct{})
 	c.mu.Lock()
 	c.connLost = connLost
+	c.turnDone = turnDone
 	c.mu.Unlock()
 
 	go func() {
@@ -469,13 +554,15 @@ func (c *Client) executeQuery(ctx context.Context, q *Query) {
 		c.cancelTurn = cancel
 		c.mu.Unlock()
 
-		answer, turnErr, denied := c.h.RunTurn(turnCtx, q)
+		report := c.h.RunTurn(turnCtx, q)
 
 		c.mu.Lock()
 		c.cancelTurn = nil
 		c.currentID = ""
+		c.turnDone = nil
 		connLostLocal := c.connLost // the watcher installed for this turn
 		c.mu.Unlock()
+		defer close(turnDone)
 		// Classify BEFORE releasing the turn context: once cancel() runs,
 		// turnCtx.Err() is non-nil and a completed turn would misread as
 		// cancelled.
@@ -502,12 +589,15 @@ func (c *Client) executeQuery(ctx context.Context, q *Query) {
 			c.mu.Lock()
 			c.lastTurn = &LastTurn{ID: q.ID, Outcome: outcome}
 			c.mu.Unlock()
-		case turnErr != nil:
+		case report.Err != nil:
 			outcome = "error"
-			errMsg = turnErr.Error()
+			errMsg = report.Err.Error()
 		}
 		if outcome != "cancelled_disconnect" {
-			c.send(ctx, Result{Type: "result", ID: q.ID, Outcome: outcome, Answer: answer, Error: errMsg, DeniedTools: denied})
+			c.send(ctx, Result{
+				Type: "result", ID: q.ID, Outcome: outcome, Answer: report.Answer, Error: errMsg,
+				DeniedTools: report.Denied, FilesTouched: report.FilesTouched,
+			})
 		}
 	}()
 }

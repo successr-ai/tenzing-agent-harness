@@ -2,8 +2,8 @@
 // protocol (docs/adrs/2026-09-12-control-plane-fleet/PROTOCOL.md, protocol
 // version "1"). A Client dials the control plane's WebSocket server,
 // registers with hello, streams harness events upstream, executes commands
-// (query/steer/cancel/approve/...) from the plane, and cancels the in-flight
-// turn when the connection drops — the turn is only meaningful while the
+// (query/steer/cancel/approve/shutdown/...) from the plane, and cancels the
+// in-flight turn when the connection drops — the turn is only meaningful while the
 // control plane can observe it.
 package wsclient
 
@@ -45,6 +45,10 @@ type Hello struct {
 	Capabilities Capabilities `json:"capabilities"`
 	// LastTurn is nil on a first connect.
 	LastTurn *LastTurn `json:"last_turn,omitempty"`
+	// ConversationID is the harness's active conversation — the id the plane
+	// passes to --resume to relaunch this agent. Empty when session
+	// persistence is disabled.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 // Welcome is the control plane's registration reply.
@@ -88,8 +92,9 @@ type Approve struct {
 	ID       string `json:"id"`
 	CallID   string `json:"call_id"`
 	Approved bool   `json:"approved"`
-	// Glob optionally persists an allow rule when Approved (serve-mode
-	// "allow always").
+	// Glob optionally adds an allow rule when Approved ("allow always").
+	// Whether it persists is the wiring's policy (connect mode keeps it in
+	// memory unless configured otherwise).
 	Glob string `json:"glob,omitempty"`
 }
 
@@ -105,6 +110,20 @@ type SetThinking struct {
 	Type    string `json:"type"` // "set-thinking"
 	ID      string `json:"id"`
 	Enabled bool   `json:"enabled"`
+}
+
+// Shutdown asks the agent to cancel the running turn (and queued ones), ack,
+// close the connection, and exit 0. No reconnect follows.
+type Shutdown struct {
+	Type string `json:"type"` // "shutdown"
+	ID   string `json:"id"`
+}
+
+// ShutdownAck is the agent's last message: the turn (if any) has reported
+// its cancelled result and the process is exiting.
+type ShutdownAck struct {
+	Type string `json:"type"` // "shutdown_ack"
+	ID   string `json:"id"`
 }
 
 // Event carries one harness event envelope upstream.
@@ -140,6 +159,9 @@ type Result struct {
 	Error string `json:"error,omitempty"`
 	// DeniedTools counts permission-denied tool calls during the turn.
 	DeniedTools int `json:"denied_tools"`
+	// FilesTouched lists the paths of successful Read/Edit/Write calls during
+	// the turn (main agent and subagents), deduplicated, first-seen order.
+	FilesTouched []string `json:"files_touched,omitempty"`
 }
 
 // Error is a command-level error reply (e.g. bad set-model ref).
@@ -192,6 +214,12 @@ func decode(raw []byte) (any, error) {
 		return &m, nil
 	case "set-thinking":
 		var m SetThinking
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return &m, nil
+	case "shutdown":
+		var m Shutdown
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return nil, err
 		}

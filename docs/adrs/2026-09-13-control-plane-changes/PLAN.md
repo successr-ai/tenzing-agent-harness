@@ -1,8 +1,17 @@
 # Plan: Control-Plane Changes to the Harness
 
-Status: proposed. Implements every item in `TENZING_CHANGES.md` (same
-directory), including the §2 nice-to-haves and the connect+resume e2e test.
-Source review on branch `tbright/ws-dial-refactor`, 2026-09-13.
+Status: **implemented 2026-09-13**. Implements every item in
+`TENZING_CHANGES.md` (same directory), including the §2 nice-to-haves and the
+connect+resume e2e test. Source review on branch `tbright/ws-dial-refactor`.
+
+Found and fixed along the way (outside the original list):
+
+- `runConnect` passed a nil tee to `setupLogging`, so `io.MultiWriter(logFile,
+  nil)` panicked on the first log line — connect mode crashed at startup.
+  `setupLogging` now skips the tee when nil.
+- `TestConnectSerialQueue/flush…` launched q1 and q2 without waiting for q1 to
+  hold the slot; when q2 won, the test deadlocked (surfaced as a 10-minute
+  `cmd/app` timeout under `-race`). It now waits for q1 first.
 
 ## 0. Corrections to TENZING_CHANGES.md (found during review)
 
@@ -212,5 +221,5 @@ definition above; `README.md`/`SYSTEM_ARCHITECTURE.md` one line each.
 7. §2b–c e2e (depends on shutdown for the clean run-1 exit) → `go test -race ./cmd/app/`
 8. §6 docs → every `PROTOCOL.md` row has a Go struct and vice versa
 
-Total ≈ 220 lines of code, ≈ 300 lines of tests. Final gate:
-`go build ./... && go vet ./... && go test -race ./...`.
+Total ≈ 220 lines of code, ≈ 300 lines of tests. Final gate passed:
+`gofmt -l . && go build ./... && go vet ./... && go test -race ./...`.

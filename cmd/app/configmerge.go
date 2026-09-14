@@ -176,6 +176,9 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 		if f.Connect.Backoff != nil && !changed("connect-backoff") {
 			cfg.ConnectBackoff = f.Connect.Backoff.Value()
 		}
+		if f.Connect.EphemeralGrants != nil && !changed("connect-ephemeral-grants") && !present("TENZING_CONNECT_EPHEMERAL_GRANTS") {
+			cfg.ConnectEphemeralGrants = *f.Connect.EphemeralGrants
+		}
 	}
 
 	if f.Permissions != nil {

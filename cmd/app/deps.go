@@ -6,6 +6,7 @@ import (
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/modelregistry"
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 )
 
 // deps holds the two model-resolution collaborators every mode shares: the
@@ -15,7 +16,14 @@ import (
 // own instead of seeding process globals.
 type deps struct {
 	models *modelregistry.Registry
-	llms   *modelregistry.Factory
+	llms   llmSource
+}
+
+// llmSource hands out LLM clients for resolved models. *modelregistry.Factory
+// is the production implementation; tests inject a fake so connect mode can
+// run end-to-end without a provider.
+type llmSource interface {
+	Get(rm modelregistry.ResolvedModel) (common.LLM, error)
 }
 
 // buildDeps merges --provider JSON definitions over the config file's

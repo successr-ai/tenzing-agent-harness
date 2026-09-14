@@ -83,6 +83,10 @@ type cliConfig struct {
 	ConnectURL     string
 	ConnectToken   string
 	ConnectBackoff time.Duration
+	// ConnectEphemeralGrants keeps runtime-approved bash globs in memory
+	// only (default true); false persists them to settings.json like serve
+	// mode.
+	ConnectEphemeralGrants bool
 
 	// env-only (no flags; filled from Config in RunE)
 	ProjectTrust string

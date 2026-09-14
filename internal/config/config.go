@@ -104,11 +104,15 @@ type MCPServer struct {
 // URL is the plane's ws:// or wss:// endpoint; setting it in the file puts
 // the process in connect mode (like the --connect flag). Token is the bearer
 // token on the upgrade request. Backoff is the reconnect delay base
-// (doubles to a 30s cap); omit for the 1s default.
+// (doubles to a 30s cap); omit for the 1s default. EphemeralGrants keeps
+// runtime-approved bash globs ("allow always") in memory for the process
+// lifetime — the fleet default, true when omitted; false persists them to
+// settings.json like serve mode.
 type ConnectSection struct {
-	URL     string    `yaml:"url"`
-	Token   string    `yaml:"token"`
-	Backoff *Duration `yaml:"backoff"`
+	URL             string    `yaml:"url"`
+	Token           string    `yaml:"token"`
+	Backoff         *Duration `yaml:"backoff"`
+	EphemeralGrants *bool     `yaml:"ephemeral_grants"`
 }
 
 // ProviderTypes are the wire protocols a provider can speak — the three

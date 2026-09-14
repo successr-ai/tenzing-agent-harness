@@ -72,6 +72,7 @@ func TestHarnessOptions(t *testing.T) {
 		{"thinking budget", cliConfig{ThinkingBudget: 8192}, 1, false},
 		{"no-session and no-context-files", cliConfig{NoSession: true, NoContextFiles: true}, 2, false},
 		{"resume adds conversation option", cliConfig{Resume: "abc123"}, 1, false},
+		{"connect mode passes resume through", cliConfig{ConnectURL: "ws://plane/fleet", Resume: "abc123"}, 1, false},
 		{"resume and continue are exclusive", cliConfig{Resume: "abc", ContinueLatest: true}, 0, true},
 		{"continue requires persistence", cliConfig{ContinueLatest: true, NoSession: true}, 0, true},
 		{"missing system file", cliConfig{SystemFile: "/definitely/not/here.md"}, 0, true},

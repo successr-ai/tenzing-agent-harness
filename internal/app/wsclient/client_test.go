@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ func TestHandshakeRegistersAgent(t *testing.T) {
 	if got.LastTurn != nil {
 		t.Errorf("first connect should not carry last_turn, got %+v", got.LastTurn)
 	}
+	if got.ConversationID != "conv-1" {
+		t.Errorf("hello.conversation_id = %q, want conv-1", got.ConversationID)
+	}
 
 	cancel()
 	if err := <-done; err != nil {
@@ -58,9 +62,9 @@ func TestQueryRunsTurnAndReportsResult(t *testing.T) {
 		pc.p.mu.Unlock()
 	})
 	h, rec := handlersFor(t)
-	h.RunTurn = func(ctx context.Context, cmd *Query) (string, error, int) {
+	h.RunTurn = func(ctx context.Context, cmd *Query) TurnReport {
 		rec.runCalled(cmd)
-		return "the answer", nil, 2
+		return TurnReport{Answer: "the answer", Denied: 2, FilesTouched: []string{"a.go", "b.go"}}
 	}
 	c := newTestClient(t, p, h, nil)
 
@@ -78,6 +82,9 @@ func TestQueryRunsTurnAndReportsResult(t *testing.T) {
 	p.mu.Unlock()
 	if res["type"] != "result" || res["id"] != "q1" || res["outcome"] != "completed" || res["answer"] != "the answer" || res["denied_tools"].(float64) != 2 {
 		t.Errorf("result = %v, want completed q1 answer=the answer denied=2", res)
+	}
+	if files, _ := res["files_touched"].([]any); len(files) != 2 || files[0] != "a.go" || files[1] != "b.go" {
+		t.Errorf("result.files_touched = %v, want [a.go b.go]", res["files_touched"])
 	}
 
 	cancel()
@@ -307,8 +314,16 @@ func TestEventAndResultShapes(t *testing.T) {
 		t.Errorf("event JSON = %s, want {type:event,id:q1,...}", b)
 	}
 	b, _ = json.Marshal(Result{Type: "result", ID: "q1", Outcome: "cancelled_disconnect"})
+	m = nil
 	_ = json.Unmarshal(b, &m)
 	if m["outcome"] != "cancelled_disconnect" {
 		t.Errorf("result outcome = %v", m["outcome"])
+	}
+	if _, present := m["files_touched"]; present {
+		t.Errorf("empty files_touched must be omitted, got %s", b)
+	}
+	b, _ = json.Marshal(Hello{Type: "hello"})
+	if strings.Contains(string(b), "conversation_id") {
+		t.Errorf("empty conversation_id must be omitted, got %s", b)
 	}
 }

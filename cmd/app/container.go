@@ -208,7 +208,11 @@ func setupLogging(debug bool, tee io.Writer) (*os.File, error) {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(logFile, tee), &slog.HandlerOptions{Level: level})))
+	var out io.Writer = logFile
+	if tee != nil {
+		out = io.MultiWriter(logFile, tee)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: level})))
 	return logFile, nil
 }
 

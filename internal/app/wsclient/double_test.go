@@ -23,12 +23,14 @@ import (
 type planeDouble struct {
 	srv *httptest.Server
 
-	mu         sync.Mutex
-	hello      Hello // last hello received
-	welcomeID  string
-	script     func(pc *planeConn)
-	lastResult map[string]any // scripted tests record results here
-	runningOf  func() string  // client probe, installed by newTestClient
+	mu          sync.Mutex
+	hello       Hello // last hello received
+	connections int   // upgrades accepted (reconnect counter)
+	welcomeID   string
+	script      func(pc *planeConn)
+	lastResult  map[string]any   // scripted tests record results here
+	upstream    []map[string]any // recordUpstream appends every upstream message
+	runningOf   func() string    // client probe, installed by newTestClient
 
 	// onHello can replace the default welcome (e.g. refuse the version).
 	onHello func(c *websocket.Conn, h Hello)
@@ -76,6 +78,7 @@ func (p *planeDouble) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Lock()
 	p.hello = h
+	p.connections++
 	onHello, welcomeID := p.onHello, p.welcomeID
 	p.mu.Unlock()
 
@@ -211,10 +214,10 @@ func handlersFor(t *testing.T) (Handlers, *handlerRecorder) {
 	t.Helper()
 	rec := &handlerRecorder{}
 	return Handlers{
-		RunTurn: func(ctx context.Context, cmd *Query) (string, error, int) {
+		RunTurn: func(ctx context.Context, cmd *Query) TurnReport {
 			rec.runCalled(cmd)
 			<-ctx.Done() // hold the turn until cancelled, by default
-			return "", ctx.Err(), 0
+			return TurnReport{Err: ctx.Err()}
 		},
 		Steer:   func(message string) error { rec.steerCalled(message); return nil },
 		Cancel:  func() { rec.cancelCalled() },
@@ -226,6 +229,7 @@ func handlersFor(t *testing.T) (Handlers, *handlerRecorder) {
 		SetThinking:    func(enabled bool) error { rec.thinkingCalled(enabled); return nil },
 		CurrentModel:   func() string { return "glm-5.3" },
 		SupportsVision: func() bool { return true },
+		ConversationID: func() string { return "conv-1" },
 	}, rec
 }
 

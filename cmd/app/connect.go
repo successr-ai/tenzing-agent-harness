@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
-	"sync/atomic"
 
 	"github.com/successr-ai/tenzing-agent-harness/api/approvals"
 	app "github.com/successr-ai/tenzing-agent-harness/internal/app"
@@ -87,16 +87,17 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		fmt.Println(string(b))
 	}
 
-	// One shared per-process denied counter: ToolDeniedEvents arrive on the
-	// bus from the loop; the running turn reads it for its result.
-	var denied atomic.Int64
+	// One shared per-process turn tally: ToolDenied/ToolSucceeded events
+	// arrive on the bus from the loop; the running turn resets it on start
+	// and reads it for its result.
+	stats := newTurnStats()
 	registry := approvals.NewRegistry()
 
 	// The serial queue: one turn at a time with FIFO follow-ups (PROTOCOL.md
 	// §4). The wsclient's RunTurn handler funnels through it, so a query
 	// arriving mid-turn waits for the next slot; disconnect flushes waiters.
-	serial := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) (string, error, int) {
-		return runConnectTurn(ctx, h, &denied, cmd)
+	serial := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
+		return runConnectTurn(ctx, h, stats, cmd)
 	})
 
 	client, err := wsclient.New(wsclient.Options{
@@ -105,17 +106,25 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		CWD:     cwd,
 		Backoff: cfg.ConnectBackoff,
 	}, wsclient.Handlers{
-		RunTurn:        serial.run,
-		Steer:          h.Steer,
-		Cancel:         serial.flush, // the explicit cancel: flush waiters (the running turn is cancelled by the client's cancel command path)
-		Approve:        func(callID string, approved bool, _ string) { answerApproval(registry, callID, approved) },
+		RunTurn: serial.run,
+		Steer:   h.Steer,
+		Cancel:  serial.flush, // the explicit cancel: flush waiters (the running turn is cancelled by the client's cancel command path)
+		Approve: func(callID string, approved bool, glob string) {
+			connectApprove(cfg.BashAllow, registry, cfg.ConnectEphemeralGrants, callID, approved, glob)
+		},
 		SetModel:       func(ref string) error { return setConnectModel(cfg, ref, h) },
 		SetThinking:    h.SetThinking,
 		CurrentModel:   h.GetCurrentModel,
 		SupportsVision: h.SupportsVision,
+		ConversationID: func() string {
+			if dir, _ := h.SessionInfo(); dir == "" {
+				return "" // persistence off: nothing for the plane to --resume
+			}
+			return h.ConversationID()
+		},
 		OnDisconnect: func() {
-			serial.flush()  // waiters give up; the plane infers from the disconnect
-			denied.Store(0) // the dead turn's count dies with it
+			serial.flush() // waiters give up; the plane infers from the disconnect
+			stats.reset()  // the dead turn's tally dies with it
 		},
 		OnReconnect: serial.reset, // accept fresh queries on the new connection
 	})
@@ -127,15 +136,15 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 	// capture) and push every forwardable event upstream, tagged with the
 	// running turn's correlation id.
 	sub := h.EventBus().Subscribe(256)
-	go forwardConnectEvents(ctx, sub, client, registry, &denied)
+	go forwardConnectEvents(ctx, sub, client, registry, stats)
 
 	// Run until the process context is cancelled; Run reconnects forever on
 	// transient failures and exits non-zero on fatal ones.
 	return client.Run(ctx)
 }
 
-// connectRunFunc executes one turn on ctx: (answer, error, denied).
-type connectRunFunc func(ctx context.Context, cmd *wsclient.Query) (string, error, int)
+// connectRunFunc executes one turn on ctx and reports its outcome.
+type connectRunFunc func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport
 
 // connectSerialQueue serializes turn execution with FIFO follow-ups. The
 // wsclient calls run from executeQuery (one goroutine per accepted query);
@@ -164,14 +173,14 @@ func newConnectSerialQueue(runFn connectRunFunc) *connectSerialQueue {
 // run executes cmd now if idle, or parks it FIFO until its turn comes.
 // It blocks until this cmd's turn finishes, so the caller (the wsclient's
 // per-query goroutine) can report the result.
-func (q *connectSerialQueue) run(ctx context.Context, cmd *wsclient.Query) (string, error, int) {
+func (q *connectSerialQueue) run(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
 	q.mu.Lock()
 	for q.running && !q.flushed {
 		q.cv.Wait()
 	}
 	if q.flushed {
 		q.mu.Unlock()
-		return "", context.Canceled, 0
+		return wsclient.TurnReport{Err: context.Canceled}
 	}
 	q.running = true
 	q.mu.Unlock()
@@ -215,23 +224,91 @@ func (q *connectSerialQueue) parked() int {
 }
 
 // runConnectTurn executes one turn: RunTurnWithImages with the images from
-// the command, returning (answer, error, deniedCount). The turn context
-// arrives already tied to connection liveness from the wsclient.
-func runConnectTurn(ctx context.Context, h *harness.Harness, denied *atomic.Int64, cmd *wsclient.Query) (string, error, int) {
+// the command, reporting the answer, error, and the turn's tally (denied
+// calls, files touched). The turn context arrives already tied to connection
+// liveness from the wsclient.
+func runConnectTurn(ctx context.Context, h *harness.Harness, stats *turnStats, cmd *wsclient.Query) wsclient.TurnReport {
 	images := make([]common.ImageSource, len(cmd.Images))
 	for i, img := range cmd.Images {
 		images[i] = common.ImageSource{MediaType: img.MediaType, Data: img.Data}
 	}
+	stats.reset()
 	answer, err := h.RunTurnWithImages(ctx, cmd.Query, images)
-	return answer, err, int(denied.Load())
+	denied, files := stats.snapshot()
+	return wsclient.TurnReport{Answer: answer, Err: err, Denied: denied, FilesTouched: files}
+}
+
+// turnStats is the running turn's tally, fed by the event pump: permission
+// denials (result.denied_tools) and the paths of successful Read/Edit/Write
+// calls (result.files_touched), deduplicated in first-seen order. Reset at
+// turn start and on disconnect.
+type turnStats struct {
+	mu     sync.Mutex
+	denied int
+	files  []string
+	seen   map[string]struct{}
+}
+
+func newTurnStats() *turnStats {
+	return &turnStats{seen: make(map[string]struct{})}
+}
+
+func (s *turnStats) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.denied = 0
+	s.files = nil
+	s.seen = make(map[string]struct{})
+}
+
+func (s *turnStats) addDenied() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.denied++
+}
+
+func (s *turnStats) addFile(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, dup := s.seen[path]; dup {
+		return
+	}
+	s.seen[path] = struct{}{}
+	s.files = append(s.files, path)
+}
+
+// snapshot returns the tally as a copy.
+func (s *turnStats) snapshot() (denied int, files []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.denied, append([]string(nil), s.files...)
+}
+
+// fileTools are the builtins whose successful call touches the path in
+// their input's file_path.
+var fileTools = map[string]bool{"Read": true, "Edit": true, "Write": true}
+
+// touchedPath extracts the file path from a successful file-tool call; ""
+// when the tool is not a file tool or the input has no path.
+func touchedPath(toolName, input string) string {
+	if !fileTools[toolName] {
+		return ""
+	}
+	var in struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(input), &in); err != nil {
+		return ""
+	}
+	return in.FilePath
 }
 
 // forwardConnectEvents pumps bus events to the control plane until ctx is
-// done or the subscription closes. It counts denials (for the turn result's
-// denied_tools), captures approval responders, and forwards events tagged
-// with the running turn's id — events with no running turn (teardown
-// stragglers, process-level events) are dropped by the client.
-func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsclient.Client, registry *approvals.Registry, denied *atomic.Int64) {
+// done or the subscription closes. It tallies the turn (denials, files
+// touched), captures approval responders, and forwards events tagged with
+// the running turn's id — events with no running turn (teardown stragglers,
+// process-level events) are dropped by the client.
+func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsclient.Client, registry *approvals.Registry, stats *turnStats) {
 	subagents := make(map[string]string)
 	for {
 		select {
@@ -241,7 +318,7 @@ func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsc
 			if !ok {
 				return
 			}
-			observeConnectEvent(ev, registry, subagents, denied)
+			observeConnectEvent(ev, registry, subagents, stats)
 			env := wire.ToWire(ev)
 			payload, err := json.Marshal(env)
 			if err != nil {
@@ -259,7 +336,7 @@ func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsc
 
 // observeConnectEvent applies one event's bookkeeping side effects — the
 // connect-mode analogue of api/events.go's observe.
-func observeConnectEvent(ev core.Event, registry *approvals.Registry, subagents map[string]string, denied *atomic.Int64) {
+func observeConnectEvent(ev core.Event, registry *approvals.Registry, subagents map[string]string, stats *turnStats) {
 	switch e := ev.(type) {
 	case core.ApprovalRequestedEvent:
 		registry.Add(e.CallID, approvals.Pending{Respond: e.Respond, Tool: e.ToolName, Input: e.Input})
@@ -268,8 +345,27 @@ func observeConnectEvent(ev core.Event, registry *approvals.Registry, subagents 
 	case core.SubagentStoppedEvent:
 		delete(subagents, e.RunnerID)
 	case core.ToolDeniedEvent:
-		denied.Add(1)
+		stats.addDenied()
+	case core.ToolSucceededEvent:
+		if p := touchedPath(e.ToolName, e.Input); p != "" {
+			stats.addFile(p)
+		}
 	}
+}
+
+// connectApprove answers a pending approval and applies an "allow always"
+// glob: in memory for the process lifetime (ephemeral, the fleet default —
+// per-node grants die with the node) or through the settings store
+// (durable, serve-mode parity) when connect.ephemeral_grants is false.
+func connectApprove(store *app.BashAllowStore, registry *approvals.Registry, ephemeral bool, callID string, approved bool, glob string) {
+	if approved && glob != "" && store != nil {
+		if ephemeral {
+			store.Rules().AllowPattern(glob)
+		} else if err := store.Add(glob); err != nil {
+			slog.Warn("connect: persist allow rule failed", "glob", glob, "error", err)
+		}
+	}
+	answerApproval(registry, callID, approved)
 }
 
 // answerApproval answers a pending approval; unknown call ids are no-ops
