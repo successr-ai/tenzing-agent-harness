@@ -68,6 +68,7 @@ const indexHTML = `<!DOCTYPE html>
   .msg.approval .deny { background: var(--red); }
   .msg.approval input.pattern { margin-top: 0.5rem; font-family: inherit; font-size: inherit; padding: 0.15rem 0.3rem; }
   .msg.approval pre.reason { margin: 0.4rem 0 0; opacity: 0.85; white-space: pre-wrap; }
+  .msg.approval .countdown { margin-left: 0.5rem; opacity: 0.7; }
   .diff { margin-top: 0.25rem; overflow-x: auto; white-space: pre; font-size: 0.75rem; line-height: 1.35; }
   .diff .add { color: var(--green); }
   .diff .del { color: var(--red); }
@@ -630,8 +631,23 @@ es.addEventListener('tool.succeeded', e => {
 
 es.addEventListener('tool.failed', e => {
   const d = JSON.parse(e.data);
+  settleApproval(d, d.data.error);
   toolResult(d, d.data.error, true);
 });
+
+// openApprovals are the approval cards still waiting on a click. A timed-out
+// or canceled approval reaches the UI only as the tool.failed the loop
+// produces (tool.denied is not forwarded), whose error names the cause and
+// whose tool_name/input equal the card's — the loop stamps no call_id on
+// it. Matching is by tool + input, oldest card first.
+const openApprovals = [];
+function settleApproval(d, error) {
+  const m = /^approval (timed out|canceled)/.exec(error || '');
+  if (!m) return;
+  const i = openApprovals.findIndex(a => a.tool === d.data.tool_name && a.input === d.data.input);
+  if (i < 0) return;
+  openApprovals.splice(i, 1)[0].settle('[tool call approval ' + m[1] + ']');
+}
 
 es.addEventListener('approval.requested', e => {
   finalizeStream();
@@ -702,6 +718,29 @@ es.addEventListener('approval.requested', e => {
   }
 
   const buttons = () => isBash ? [approve, deny, always, session] : [approve, deny];
+  // Countdown to the loop's auto-deny (timeout_ms from the event), ticking
+  // once a second from receipt; settle removes it. Nothing is rendered when
+  // the server sent no timeout (older harness).
+  const countdown = document.createElement('span');
+  countdown.className = 'countdown';
+  const deadline = Date.now() + (d.data.timeout_ms || 0);
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    countdown.textContent = 'auto-deny in ' + (left >= 60 ? Math.floor(left / 60) + 'm' + String(left % 60).padStart(2, '0') + 's' : left + 's');
+  };
+  let ticker = 0;
+  if (d.data.timeout_ms > 0) { tick(); ticker = setInterval(tick, 1000); }
+  // settle closes the card: buttons off, countdown gone, verdict appended.
+  // Called once — by decide on a successful POST, or by settleApproval when
+  // the loop gives up waiting (timeout / turn canceled).
+  const entry = {tool: d.data.tool_name, input: d.data.input, settle: verdict => {
+    buttons().forEach(b => b.disabled = true);
+    if (pattern) pattern.disabled = true;
+    clearInterval(ticker);
+    countdown.remove();
+    el.append(' → ' + verdict);
+  }};
+  openApprovals.push(entry);
   const decide = async (approved, allow, scope) => {
     buttons().forEach(b => b.disabled = true);
     if (pattern) pattern.disabled = true;
@@ -714,7 +753,9 @@ es.addEventListener('approval.requested', e => {
       if (!res.ok) throw new Error('approve failed: ' + res.status + ' ' + await res.text());
       const verdict = !allow ? (approved ? 'approved' : 'denied')
         : scope === 'session' ? 'allowing ' + allow + ' this session' : 'always allowing ' + allow;
-      el.append(' → ' + verdict);
+      const i = openApprovals.indexOf(entry);
+      if (i >= 0) openApprovals.splice(i, 1);
+      entry.settle(verdict);
     } catch(err) {
       // Leave the request answerable: the write may have failed.
       buttons().forEach(b => b.disabled = false);
@@ -740,6 +781,7 @@ es.addEventListener('approval.requested', e => {
     el.appendChild(session);
     el.appendChild(pattern);
   }
+  if (ticker) el.appendChild(countdown);
   chat.scrollTop = chat.scrollHeight;
 });
 

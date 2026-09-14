@@ -163,10 +163,11 @@ type taskCompleted struct {
 }
 
 type approvalRequested struct {
-	CallID   string `json:"call_id"`
-	ToolName string `json:"tool_name"`
-	Input    string `json:"input"`
-	Reason   string `json:"reason"`
+	CallID    string `json:"call_id"`
+	ToolName  string `json:"tool_name"`
+	Input     string `json:"input"`
+	Reason    string `json:"reason"`
+	TimeoutMS int64  `json:"timeout_ms"` // auto-deny deadline, for a countdown
 }
 
 type steeringInjected struct {
@@ -302,7 +303,7 @@ func ToWire(ev core.Event) Envelope {
 		env.Data = taskCompleted{TaskID: e.TaskID}
 	case core.ApprovalRequestedEvent:
 		setBase(e.BaseEvent)
-		env.Data = approvalRequested{CallID: e.CallID, ToolName: e.ToolName, Input: e.Input, Reason: e.Reason}
+		env.Data = approvalRequested{CallID: e.CallID, ToolName: e.ToolName, Input: e.Input, Reason: e.Reason, TimeoutMS: e.Timeout.Milliseconds()}
 	case core.SteeringInjectedEvent:
 		setBase(e.BaseEvent)
 		env.Data = steeringInjected{Message: e.Message}

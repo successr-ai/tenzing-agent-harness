@@ -355,3 +355,18 @@ func TestBashRulesToolNameCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+// A binary glob (`zig *`) never covers a redirect write, but it must not
+// shadow a later glob that spells the redirect (`zig *>/tmp/*`): coverage
+// is "any allow glob qualifies", not "the first match qualifies".
+func TestRedirectGlobNotShadowedByBinaryGlob(t *testing.T) {
+	r := NewBashRules([]string{"zig *"}, nil)
+	r.AllowPatternSession("zig *>/tmp/*")
+	cmd := "zig build test > /tmp/t.log 2>&1; tail -4 /tmp/t.log"
+	if d, reason, _ := r.Verdict(cmd); d != core.Allow {
+		t.Errorf("Verdict = %v (%s), want Allow", d, reason)
+	}
+	if glob, reason := r.Suggest(cmd); glob != "" {
+		t.Errorf("Suggest = %q (%s), want no suggestion", glob, reason)
+	}
+}

@@ -78,8 +78,8 @@ func TestToWireCoversEveryCoreEvent(t *testing.T) {
 			pre + `task.created` + mid + `,"data":{"task_id":"t1","description":"d"}}`},
 		{"task completed", core.TaskCompletedEvent{BaseEvent: base(core.EventTaskCompleted), TaskID: "t1"},
 			pre + `task.completed` + mid + `,"data":{"task_id":"t1"}}`},
-		{"approval requested drops Respond", core.ApprovalRequestedEvent{BaseEvent: base(core.EventApprovalRequested), CallID: "c1", ToolName: "bash", Input: "rm", Reason: "danger", Respond: func(bool) {}},
-			pre + `approval.requested` + mid + `,"data":{"call_id":"c1","tool_name":"bash","input":"rm","reason":"danger"}}`},
+		{"approval requested drops Respond", core.ApprovalRequestedEvent{BaseEvent: base(core.EventApprovalRequested), CallID: "c1", ToolName: "bash", Input: "rm", Reason: "danger", Timeout: 2 * time.Minute, Respond: func(bool) {}},
+			pre + `approval.requested` + mid + `,"data":{"call_id":"c1","tool_name":"bash","input":"rm","reason":"danger","timeout_ms":120000}}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

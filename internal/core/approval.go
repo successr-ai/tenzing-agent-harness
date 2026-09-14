@@ -14,11 +14,14 @@ import (
 // of the latter count as denial.
 type ApprovalRequestedEvent struct {
 	BaseEvent
-	CallID   string              `json:"call_id"`
-	ToolName string              `json:"tool_name"`
-	Input    string              `json:"input"`
-	Reason   string              `json:"reason"`
-	Respond  func(approved bool) `json:"-"`
+	CallID   string `json:"call_id"`
+	ToolName string `json:"tool_name"`
+	Input    string `json:"input"`
+	Reason   string `json:"reason"`
+	// Timeout is how long the loop waits for Respond before denying — the
+	// driver's countdown. Always > 0 (the event is not emitted otherwise).
+	Timeout time.Duration       `json:"timeout"`
+	Respond func(approved bool) `json:"-"`
 }
 
 // requestApproval emits the ApprovalRequestedEvent for one AskUser call and
@@ -43,6 +46,7 @@ func (l *Loop) requestApproval(call ToolCall, reason string) <-chan bool {
 		ToolName:  call.Name,
 		Input:     call.Input,
 		Reason:    reason,
+		Timeout:   l.approvalTimeout,
 		Respond:   respond,
 	})
 	return ch

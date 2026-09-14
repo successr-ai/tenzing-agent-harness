@@ -193,20 +193,25 @@ func (s snapshot) globAllowed(seg shell.Segment) bool {
 // every bit is category-allowed (read-only trivially is; Unknown never can
 // be), or an allow glob — with one carve-out. A glob covers the binary it
 // names, not a redirect bolted onto it: `cat *` must not allowlist `cat >
-// anything`. A redirect write is covered only when the glob itself spells
-// the redirect (`cat >*`) or fs:write is category-allowed.
+// anything`. A redirect write is covered only when a glob itself spells
+// the redirect (`cat >*`) or fs:write is category-allowed. Every allow glob
+// is tried: a plain `zig *` earlier in the list must not shadow a later
+// `zig *>/tmp/*` that does qualify.
 func (s snapshot) covered(seg shell.Segment) bool {
 	if seg.Class&^s.catAllow == 0 {
 		return true
 	}
-	glob, ok := matchingGlob(s.allow, seg.Text)
-	if !ok {
-		return false
+	needsRedirect := writesViaRedirect(seg) && !s.catAllow.Has(shell.FSWrite)
+	for _, glob := range s.allow {
+		if !globMatches(glob, seg.Text) {
+			continue
+		}
+		if needsRedirect && !strings.Contains(glob, ">") {
+			continue
+		}
+		return true
 	}
-	if writesViaRedirect(seg) && !strings.Contains(glob, ">") && !s.catAllow.Has(shell.FSWrite) {
-		return false
-	}
-	return true
+	return false
 }
 
 // Verdict reports the decision for one bash command. ok is false when the
@@ -258,19 +263,23 @@ func matchAny(patterns []string, s string) bool {
 // matchingGlob returns the first pattern matching s.
 func matchingGlob(patterns []string, s string) (string, bool) {
 	for _, p := range patterns {
-		if matchGlob(p, s) {
-			return p, true
-		}
-		// A trailing " *" reads as "with any arguments", and no arguments
-		// is a case of that: `head *` covers a bare `head` in `grep x f |
-		// head`. Without this a rule can never cover the argument-less form,
-		// and on the deny side it would leave `git commit` open to a rule
-		// written as `git commit *`.
-		if strings.HasSuffix(p, " *") && s == strings.TrimSuffix(p, " *") {
+		if globMatches(p, s) {
 			return p, true
 		}
 	}
 	return "", false
+}
+
+// globMatches reports whether one allow/deny pattern covers s. A trailing
+// " *" reads as "with any arguments", and no arguments is a case of that:
+// `head *` covers a bare `head` in `grep x f | head`. Without this a rule
+// can never cover the argument-less form, and on the deny side it would
+// leave `git commit` open to a rule written as `git commit *`.
+func globMatches(p, s string) bool {
+	if matchGlob(p, s) {
+		return true
+	}
+	return strings.HasSuffix(p, " *") && s == strings.TrimSuffix(p, " *")
 }
 
 // bashCommand pulls the command out of a bash tool call's JSON input.

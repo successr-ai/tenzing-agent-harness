@@ -51,9 +51,9 @@ func TestTranslateSSE(t *testing.T) {
 		},
 		{
 			"approval requested",
-			core.ApprovalRequestedEvent{BaseEvent: base(core.EventApprovalRequested, "runner-sub"), CallID: "c1", ToolName: "bash", Input: "rm", Reason: "danger", Respond: func(bool) {}},
+			core.ApprovalRequestedEvent{BaseEvent: base(core.EventApprovalRequested, "runner-sub"), CallID: "c1", ToolName: "bash", Input: "rm", Reason: "danger", Timeout: 2 * time.Minute, Respond: func(bool) {}},
 			true, "approval.requested",
-			`{"v":1,"type":"approval.requested","ts":"2026-07-25T12:00:00Z","runner_id":"runner-sub","data":{"call_id":"c1","tool_name":"bash","input":"rm","reason":"danger"},"agent":"a1"}`,
+			`{"v":1,"type":"approval.requested","ts":"2026-07-25T12:00:00Z","runner_id":"runner-sub","data":{"call_id":"c1","tool_name":"bash","input":"rm","reason":"danger","timeout_ms":120000},"agent":"a1"}`,
 		},
 		{
 			"subagent started",
