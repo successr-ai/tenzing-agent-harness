@@ -94,6 +94,7 @@ const indexHTML = `<!DOCTYPE html>
   #status .ctx { color: var(--green); }
   #status .ctx.warn { color: var(--yellow); }
   #status .ctx.crit { color: var(--red); }
+  #status .conv { user-select: all; }
   #query {
     flex: 1;
     background: transparent;
@@ -289,6 +290,7 @@ let contextUsed = 0;   // tokens in the main agent's last request
 let contextWindow = 0; // 0 = unknown, gauge hidden
 let statusNote = '';   // transient left-hand note (tool phase)
 let cwd = '';          // for shortening tool-call paths
+let conversationID = ''; // resume handle, shown in the status bar
 let home = '';
 let visionOK = false;
 let pendingImages = []; // {media_type, data}
@@ -303,6 +305,7 @@ async function refreshState() {
     contextWindow = d.context_window || 0;
     cwd = d.cwd || '';
     home = d.home || '';
+    conversationID = d.conversation_id || '';
     renderStatus();
     if (!visionOK && pendingImages.length) {
       pendingImages = [];
@@ -423,6 +426,16 @@ function renderStatus() {
   let tk = fmtTokens(inputTokens) + '↑ ' + fmtTokens(outputTokens) + '↓';
   if (costUSD != null) tk += ' $' + costUSD.toFixed(4);
   statusEl.append(contextWindow > 0 ? ' · ' + tk : tk);
+
+  // The conversation ID is the --resume / /resume handle; selectable text
+  // so it can be copied straight off the bar.
+  if (conversationID) {
+    const id = document.createElement('span');
+    id.className = 'conv';
+    id.title = 'conversation ID — resume with: tenzing --resume ' + conversationID;
+    id.textContent = conversationID;
+    statusEl.append(' · ⟲ ', id);
+  }
 }
 
 // setRunning flips the composer between two modes: idle sends a new turn,
