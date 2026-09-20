@@ -80,8 +80,67 @@ type File struct {
 	// Providers are the backends models are served from; Models are the
 	// named model definitions that reference them. Both are required for
 	// any model to resolve — there is no compiled-in fallback set.
-	Providers []Provider   `yaml:"providers"`
-	Models    []ModelEntry `yaml:"models"`
+	Providers []Provider    `yaml:"providers"`
+	Models    ModelsSection `yaml:"models"`
+}
+
+// ModelsSection is tenzing.yaml's models: block, split by the kind of model
+// declared: llm: entries are chat models behind common.LLM, systemone:
+// entries are decision models behind common.SystemOne. The two kinds share
+// one alias namespace, because refs (model:, --model, advisor_model:) name a
+// bare alias and would otherwise be ambiguous.
+//
+// A bare sequence is still accepted and loads as LLM, so configs written
+// before the split keep working:
+//
+//	models:            models:
+//	  - name: main       llm:
+//	    ...                - name: main
+//	                         ...
+type ModelsSection struct {
+	LLM       []ModelEntry     `yaml:"llm"`
+	SystemOne []SystemOneEntry `yaml:"systemone"`
+}
+
+// UnmarshalYAML accepts either shape. Both branches decode strictly, the way
+// the top-level decoder does: yaml.Node.Decode drops the KnownFields setting,
+// so each branch re-encodes the node and runs it through a strict decoder of
+// its own, keeping a typo inside a model entry a startup error.
+func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		var entries []ModelEntry
+		if err := strictDecodeNode(node, &entries); err != nil {
+			return err
+		}
+		*m = ModelsSection{LLM: entries}
+		return nil
+	case yaml.MappingNode:
+		type plain ModelsSection
+		var section plain
+		if err := strictDecodeNode(node, &section); err != nil {
+			return err
+		}
+		*m = ModelsSection(section)
+		return nil
+	default:
+		return fmt.Errorf("models: want a mapping with llm:/systemone: keys, or a plain list of llm models")
+	}
+}
+
+// strictDecodeNode decodes one node with unknown-key rejection, which
+// node.Decode alone does not do.
+func strictDecodeNode(node *yaml.Node, out any) error {
+	data, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(out); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 // PermissionsSection overrides the default permission policy. A tool named
@@ -125,7 +184,14 @@ type ConnectSection struct {
 // speak the OpenAI protocol, so DefaultProviderType covers them all and a
 // provider entry usually needs no type at all; what distinguishes one such
 // backend from another is its URL, not its name.
-var ProviderTypes = []string{"anthropic", "ollama", DefaultProviderType}
+var ProviderTypes = []string{"anthropic", "ollama", DefaultProviderType, SystemOneProviderType}
+
+// SystemOneProviderType is the System One evaluation protocol
+// (POST <url>/v1/systemone), served by TypeSafe and by OpenRouter. It is
+// named after the protocol rather than either vendor, like the other three.
+// Models behind it are decision models, declared under models.systemone: and
+// built as common.SystemOne — never as common.LLM.
+const SystemOneProviderType = "systemone"
 
 // DefaultProviderType is the type a provider gets when it names none.
 const DefaultProviderType = "openai_compat"
@@ -175,6 +241,24 @@ type ModelEntry struct {
 	// provider validates it; a bad value fails the first request, not
 	// startup. Ignored by providers with no tier concept (Anthropic).
 	ReasoningEffort string `yaml:"reasoning_effort"`
+}
+
+// SystemOneEntry defines a System One (decision) model. The fields are the
+// three that mean anything for one: Name is the local alias refs use,
+// ModelName is the id sent on the wire ("jev-latest" at TypeSafe,
+// "typesafe/jev-1.13" via OpenRouter), and Provider names an entry in
+// File.Providers whose type is SystemOneProviderType.
+//
+// There is deliberately no context_window, max_response_tokens, vision or
+// reasoning_effort: the answer is a fixed-size typed value that is not
+// billed, the model takes no images and has no reasoning tier, and the token
+// budgets are constants in the protocol package (systemone.MaxRequestTokens,
+// systemone.MaxStateQuestionTokens) because nothing about them travels on
+// the wire.
+type SystemOneEntry struct {
+	Provider  string `yaml:"provider"`
+	Name      string `yaml:"name"`
+	ModelName string `yaml:"model_name"`
 }
 
 // CostEntry is USD per million tokens. CacheRead/CacheWrite default to the
@@ -274,9 +358,16 @@ func ValidateProviders(ps []Provider) error {
 			return fmt.Errorf("providers[%d] (%s): unknown type %q (one of: %s; omit it for %s)",
 				i, p.Name, p.Type, strings.Join(ProviderTypes, ", "), DefaultProviderType)
 		// Only openai_compat needs a URL: for anthropic and ollama the
-		// client knows its vendor's endpoint.
+		// client knows its vendor's endpoint. A systemone provider carries
+		// TypeSafe's endpoint by default but may point elsewhere.
 		case p.Type == DefaultProviderType && p.URL == "":
 			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, DefaultProviderType)
+		// The client appends /v1/systemone itself, so the url stops before
+		// /v1. Copying an openai_compat base (".../api/v1") is the easy
+		// mistake, and it produces /v1/v1/systemone and a 404 at runtime.
+		case p.Type == SystemOneProviderType && strings.HasSuffix(strings.TrimSuffix(p.URL, "/"), "/v1"):
+			return fmt.Errorf("providers[%d] (%s): url must stop before /v1 for %s providers — the client appends /v1/systemone (use %q)",
+				i, p.Name, SystemOneProviderType, strings.TrimSuffix(strings.TrimSuffix(p.URL, "/"), "/v1"))
 		case seen[p.Name]:
 			return fmt.Errorf("providers[%d]: duplicate provider name %q", i, p.Name)
 		}
@@ -295,23 +386,50 @@ func (f File) validate() error {
 		return err
 	}
 	providers := map[string]bool{}
+	providerTypes := map[string]string{}
 	for _, p := range f.Providers {
 		providers[p.Name] = true
+		providerTypes[p.Name] = p.Type
 	}
 
+	// One alias namespace across both kinds: refs (model:, --model,
+	// advisor_model:) name a bare alias, so the same name in both lists
+	// would be ambiguous.
 	models := map[string]bool{}
-	for i, e := range f.Models {
+	for i, e := range f.Models.LLM {
 		switch {
 		case e.Name == "":
-			return fmt.Errorf("models[%d]: name is required", i)
+			return fmt.Errorf("models.llm[%d]: name is required", i)
 		case e.ModelName == "":
-			return fmt.Errorf("models[%d] (%s): model_name is required", i, e.Name)
+			return fmt.Errorf("models.llm[%d] (%s): model_name is required", i, e.Name)
 		case e.Provider == "":
-			return fmt.Errorf("models[%d] (%s): provider is required", i, e.Name)
+			return fmt.Errorf("models.llm[%d] (%s): provider is required", i, e.Name)
 		case !providers[e.Provider]:
-			return fmt.Errorf("models[%d] (%s): provider %q is not declared in providers:", i, e.Name, e.Provider)
+			return fmt.Errorf("models.llm[%d] (%s): provider %q is not declared in providers:", i, e.Name, e.Provider)
+		case providerTypes[e.Provider] == SystemOneProviderType:
+			return fmt.Errorf("models.llm[%d] (%s): provider %q is a %s provider; declare this model under models.systemone:",
+				i, e.Name, e.Provider, SystemOneProviderType)
 		case models[e.Name]:
-			return fmt.Errorf("models[%d]: duplicate model name %q", i, e.Name)
+			return fmt.Errorf("models.llm[%d]: duplicate model name %q", i, e.Name)
+		}
+		models[e.Name] = true
+	}
+
+	for i, e := range f.Models.SystemOne {
+		switch {
+		case e.Name == "":
+			return fmt.Errorf("models.systemone[%d]: name is required", i)
+		case e.ModelName == "":
+			return fmt.Errorf("models.systemone[%d] (%s): model_name is required", i, e.Name)
+		case e.Provider == "":
+			return fmt.Errorf("models.systemone[%d] (%s): provider is required", i, e.Name)
+		case !providers[e.Provider]:
+			return fmt.Errorf("models.systemone[%d] (%s): provider %q is not declared in providers:", i, e.Name, e.Provider)
+		case providerTypes[e.Provider] != SystemOneProviderType:
+			return fmt.Errorf("models.systemone[%d] (%s): provider %q has type %q; a System One model needs a %s provider",
+				i, e.Name, e.Provider, providerTypes[e.Provider], SystemOneProviderType)
+		case models[e.Name]:
+			return fmt.Errorf("models.systemone[%d]: duplicate model name %q", i, e.Name)
 		}
 		models[e.Name] = true
 	}

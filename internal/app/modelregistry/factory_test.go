@@ -1,6 +1,7 @@
 package modelregistry
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/config"
@@ -161,5 +162,63 @@ func TestBuildLLMEmptyURL(t *testing.T) {
 				t.Errorf("buildLLM(%s) with no url: %v", typ, err)
 			}
 		})
+	}
+}
+
+// GetSystemOne builds on a miss, reuses on a hit, and never collapses two
+// backends of the same protocol onto one client.
+func TestFactoryGetSystemOne(t *testing.T) {
+	reg, err := Build(testProviders, config.ModelsSection{
+		LLM: []config.ModelEntry{{Name: "chat", Provider: "local", ModelName: "glm-5.3"}},
+		SystemOne: []config.SystemOneEntry{
+			{Name: "jev", Provider: "typesafe", ModelName: "jev-latest"},
+			{Name: "jev-or", Provider: "openrouter-jev", ModelName: "typesafe/jev-1.13"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	f := NewFactory()
+
+	jev, _ := reg.ResolveSystemOne("jev")
+	or, _ := reg.ResolveSystemOne("jev-or")
+
+	first, err := f.GetSystemOne(jev)
+	if err != nil {
+		t.Fatalf("GetSystemOne: %v", err)
+	}
+	if first.GetCurrentModel() != "jev-latest" {
+		t.Errorf("model = %q, want jev-latest", first.GetCurrentModel())
+	}
+	again, err := f.GetSystemOne(jev)
+	if err != nil {
+		t.Fatalf("GetSystemOne (cached): %v", err)
+	}
+	if first != again {
+		t.Error("second GetSystemOne built a new client instead of reusing the cached one")
+	}
+	other, err := f.GetSystemOne(or)
+	if err != nil {
+		t.Fatalf("GetSystemOne (other backend): %v", err)
+	}
+	if other == first {
+		t.Error("two providers shared one client")
+	}
+	if other.GetCurrentModel() != "typesafe/jev-1.13" {
+		t.Errorf("model = %q, want typesafe/jev-1.13", other.GetCurrentModel())
+	}
+}
+
+// A System One provider cannot serve a chat model ref. Config validation
+// blocks the declared path, so this covers the inline --model ref that
+// bypasses it, and it must explain itself rather than report an unknown
+// provider.
+func TestBuildLLMRejectsSystemOneProvider(t *testing.T) {
+	_, err := buildLLM(ResolvedModel{
+		Def:      common.ModelDefinition{Name: "jev-latest"},
+		Provider: config.Provider{Name: "typesafe", Type: config.SystemOneProviderType},
+	})
+	if err == nil || !strings.Contains(err.Error(), "System One model") {
+		t.Fatalf("err = %v, want a System One explanation", err)
 	}
 }

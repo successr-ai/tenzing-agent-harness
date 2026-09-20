@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -116,10 +117,10 @@ models:
 	if got := p.Extra["provider.sort"]; got != "throughput" {
 		t.Errorf("extra = %+v, want provider.sort: throughput", p.Extra)
 	}
-	if len(f.Models) != 1 {
+	if len(f.Models.LLM) != 1 || len(f.Models.SystemOne) != 0 {
 		t.Fatalf("models wrong: %+v", f.Models)
 	}
-	e := f.Models[0]
+	e := f.Models.LLM[0]
 	if e.Provider != "router" || e.Name != "custom" || e.ModelName != "vendor/custom-4" ||
 		e.ContextWindow != 200000 || e.MaxResponseTokens != 16384 || !e.Vision || e.ReasoningEffort != "high" {
 		t.Errorf("model entry wrong: %+v", e)
@@ -144,6 +145,10 @@ func TestLoad_OmittedPointersStayNil(t *testing.T) {
 // entry to the same providers: key rather than opening a second one (which
 // yaml rejects before validation ever runs).
 const provYAML = "providers:\n  - name: p\n    type: ollama\n    url: http://x\n"
+
+// soProvYAML declares a System One provider, the only kind a models.systemone:
+// entry may name.
+const soProvYAML = "providers:\n  - name: so\n    type: systemone\n    url: https://api.typesafe.ai\n"
 
 func TestLoad_Errors(t *testing.T) {
 	tests := []struct {
@@ -178,6 +183,18 @@ func TestLoad_Errors(t *testing.T) {
 		{"model missing provider", provYAML + "models:\n  - name: n\n    model_name: m\n", "provider is required"},
 		{"model undeclared provider", provYAML + "models:\n  - name: n\n    provider: nope\n    model_name: m\n", "not declared in providers"},
 		{"duplicate model", provYAML + "models:\n  - name: n\n    provider: p\n    model_name: m\n  - name: n\n    provider: p\n    model_name: m2\n", "duplicate model"},
+
+		// System One models and the models: split.
+		{"models wrong kind", provYAML + "models: 3\n", "want a mapping"},
+		{"unknown models key", provYAML + "models:\n  llms:\n    - name: n\n", "llms"},
+		{"nested entry unknown key", provYAML + "models:\n  llm:\n    - name: n\n      provider: p\n      model_name: m\n      base_url: http://x\n", "base_url"},
+		{"systemone entry unknown key", soProvYAML + "models:\n  systemone:\n    - name: jev\n      provider: so\n      model_name: jev-latest\n      vision: true\n", "vision"},
+		{"systemone missing model_name", soProvYAML + "models:\n  systemone:\n    - name: jev\n      provider: so\n", "models.systemone[0] (jev): model_name is required"},
+		{"systemone undeclared provider", soProvYAML + "models:\n  systemone:\n    - name: jev\n      provider: nope\n      model_name: jev-latest\n", "not declared in providers"},
+		{"systemone on chat provider", provYAML + "models:\n  systemone:\n    - name: jev\n      provider: p\n      model_name: jev-latest\n", "a System One model needs a systemone provider"},
+		{"llm on systemone provider", soProvYAML + "models:\n  llm:\n    - name: n\n      provider: so\n      model_name: m\n", "declare this model under models.systemone:"},
+		{"alias collides across kinds", soProvYAML + provYAML[len("providers:\n"):] + "models:\n  llm:\n    - name: dup\n      provider: p\n      model_name: m\n  systemone:\n    - name: dup\n      provider: so\n      model_name: jev-latest\n", "duplicate model name"},
+		{"systemone url keeps v1", "providers:\n  - name: so\n    type: systemone\n    url: https://openrouter.ai/api/v1\n", "url must stop before /v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -322,8 +339,8 @@ func TestTokenLimitKeysAreDistinct(t *testing.T) {
 		if f.MaxTurnTokens != 100000 {
 			t.Errorf("MaxTurnTokens = %d, want 100000", f.MaxTurnTokens)
 		}
-		if f.Models[0].MaxResponseTokens != 4096 {
-			t.Errorf("MaxResponseTokens = %d, want 4096", f.Models[0].MaxResponseTokens)
+		if f.Models.LLM[0].MaxResponseTokens != 4096 {
+			t.Errorf("MaxResponseTokens = %d, want 4096", f.Models.LLM[0].MaxResponseTokens)
 		}
 	})
 
@@ -337,5 +354,40 @@ func TestTokenLimitKeysAreDistinct(t *testing.T) {
 				t.Fatal("max_tokens should no longer be a valid key")
 			}
 		})
+	}
+}
+
+// The models: block accepts the nested mapping and the pre-split sequence,
+// and the two produce the same LLM list.
+func TestLoad_ModelsSectionShapes(t *testing.T) {
+	const legacy = provYAML +
+		"models:\n" +
+		"  - name: main\n    provider: p\n    model_name: w\n    context_window: 4096\n"
+	const nested = provYAML +
+		"  - name: so\n    type: systemone\n    url: https://api.typesafe.ai\n" +
+		"models:\n" +
+		"  llm:\n    - name: main\n      provider: p\n      model_name: w\n      context_window: 4096\n" +
+		"  systemone:\n    - name: jev\n      provider: so\n      model_name: typesafe/jev-1.13\n"
+
+	legacyFile, _, err := Load(writeFile(t, legacy), true)
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	nestedFile, _, err := Load(writeFile(t, nested), true)
+	if err != nil {
+		t.Fatalf("Load nested: %v", err)
+	}
+
+	if len(legacyFile.Models.LLM) != 1 || len(legacyFile.Models.SystemOne) != 0 {
+		t.Fatalf("legacy models = %+v, want one llm entry", legacyFile.Models)
+	}
+	if !reflect.DeepEqual(legacyFile.Models.LLM, nestedFile.Models.LLM) {
+		t.Errorf("llm entries differ:\n legacy %+v\n nested %+v", legacyFile.Models.LLM, nestedFile.Models.LLM)
+	}
+	if len(nestedFile.Models.SystemOne) != 1 {
+		t.Fatalf("systemone = %+v, want one entry", nestedFile.Models.SystemOne)
+	}
+	if e := nestedFile.Models.SystemOne[0]; e.Name != "jev" || e.Provider != "so" || e.ModelName != "typesafe/jev-1.13" {
+		t.Errorf("systemone entry = %+v", e)
 	}
 }

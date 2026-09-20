@@ -37,11 +37,25 @@ type ResolvedModel struct {
 	Provider config.Provider
 }
 
+// ResolvedSystemOne pairs a System One model with the provider serving it.
+// It is deliberately not a common.ModelDefinition: every other field of that
+// struct describes a chat model (context window, max tokens, vision,
+// reasoning tier), and a decision model has none of them. Name is the wire
+// id ("jev-latest" at TypeSafe, "typesafe/jev-1.13" via OpenRouter); the
+// local alias never leaves this package's output.
+type ResolvedSystemOne struct {
+	Name     string
+	Provider config.Provider
+}
+
 // Registry resolves model refs to definitions. Everything comes from
 // tenzing.yaml: models are keyed by the `name` alias they declare, and there
-// is no compiled-in fallback set.
+// is no compiled-in fallback set. The two kinds share one alias namespace
+// (config.File.validate enforces it) but sit in separate indexes, because a
+// ref resolves to one kind or the other, never either.
 type Registry struct {
 	byName    map[string]ResolvedModel
+	systemOne map[string]ResolvedSystemOne
 	providers map[string]config.Provider
 	// pricing is keyed by lowercase wire model name (matching the model
 	// field of LLMResponseEvent, which providers fill in from the response,
@@ -51,11 +65,12 @@ type Registry struct {
 
 // Build builds the Registry from tenzing.yaml's providers: and models:
 // sections. config.File.validate has already checked that names are unique
-// and that every model names a declared provider, so the work here is
-// defaulting and indexing.
-func Build(providers []config.Provider, entries []config.ModelEntry) (*Registry, error) {
+// across both model kinds and that every model names a declared provider of
+// the right type, so the work here is defaulting and indexing.
+func Build(providers []config.Provider, models config.ModelsSection) (*Registry, error) {
 	reg := &Registry{
 		byName:    map[string]ResolvedModel{},
+		systemOne: map[string]ResolvedSystemOne{},
 		providers: map[string]config.Provider{},
 		pricing:   map[string]config.CostEntry{},
 	}
@@ -63,10 +78,19 @@ func Build(providers []config.Provider, entries []config.ModelEntry) (*Registry,
 		reg.providers[p.Name] = p
 	}
 
-	for i, e := range entries {
+	for i, e := range models.SystemOne {
+		prov, ok := reg.providers[e.Provider]
+		if !ok {
+			return nil, fmt.Errorf("models.systemone[%d]: provider %q is not declared in providers: (declared: %s)",
+				i, e.Provider, strings.Join(reg.providerNames(), ", "))
+		}
+		reg.systemOne[e.Name] = ResolvedSystemOne{Name: e.ModelName, Provider: prov}
+	}
+
+	for i, e := range models.LLM {
 		rm, err := reg.resolveEntry(e)
 		if err != nil {
-			return nil, fmt.Errorf("models[%d]: %w", i, err)
+			return nil, fmt.Errorf("models.llm[%d]: %w", i, err)
 		}
 		reg.byName[e.Name] = rm
 		if e.Cost != nil {
@@ -147,9 +171,36 @@ func (r *Registry) Resolve(ref string) (ResolvedModel, error) {
 	}
 	rm, ok := r.byName[ref]
 	if !ok {
-		return ResolvedModel{}, fmt.Errorf("model %q is not declared in models:", ref)
+		if _, isSystemOne := r.systemOne[ref]; isSystemOne {
+			return ResolvedModel{}, fmt.Errorf("model %q is a System One model: it answers typed questions, not chat turns, so it cannot serve a model ref", ref)
+		}
+		return ResolvedModel{}, fmt.Errorf("model %q is not declared in models.llm:", ref)
 	}
 	return rm, nil
+}
+
+// ResolveSystemOne maps an alias to a System One model and its provider.
+// Aliases only: inline "{...}" refs exist for --model, and no flag or config
+// key takes a System One ref yet.
+func (r *Registry) ResolveSystemOne(ref string) (ResolvedSystemOne, error) {
+	rs, ok := r.systemOne[ref]
+	if !ok {
+		if _, isLLM := r.byName[ref]; isLLM {
+			return ResolvedSystemOne{}, fmt.Errorf("model %q is a chat model, not a System One model", ref)
+		}
+		return ResolvedSystemOne{}, fmt.Errorf("model %q is not declared in models.systemone:", ref)
+	}
+	return rs, nil
+}
+
+// SystemOneNames lists every declared System One alias, sorted.
+func (r *Registry) SystemOneNames() []string {
+	out := make([]string, 0, len(r.systemOne))
+	for k := range r.systemOne {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Names lists every declared model alias, sorted.
@@ -166,10 +217,22 @@ func (r *Registry) Names() []string {
 // behind --list-models and the declared-models part of a bad-ref error.
 func (r *Registry) List() string {
 	var b strings.Builder
+	if len(r.systemOne) > 0 {
+		b.WriteString("llm:\n")
+	}
 	for _, name := range r.Names() {
 		rm := r.byName[name]
 		fmt.Fprintf(&b, "%-24s %-16s %-32s ctx=%-8d max_response_tokens=%d\n",
 			name, rm.Provider.Name, rm.Def.Name, rm.Def.ContextWindowSize, rm.Def.MaxTokens)
+	}
+	// System One rows carry no context or token columns: the budgets are
+	// protocol constants, and the answer is a fixed-size typed value.
+	if len(r.systemOne) > 0 {
+		b.WriteString("systemone:\n")
+		for _, name := range r.SystemOneNames() {
+			rs := r.systemOne[name]
+			fmt.Fprintf(&b, "%-24s %-16s %s\n", name, rs.Provider.Name, rs.Name)
+		}
 	}
 	return b.String()
 }

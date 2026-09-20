@@ -223,7 +223,7 @@ mcp_servers:                           # mounted alongside any --mcp-server flag
 
 providers:                             # required: the backends models are served from
   - name: ollama-cloud                 # unique label, referenced by models[].provider
-    type: ollama                       # anthropic|ollama|openai_compat; omit for openai_compat
+    type: ollama                       # anthropic|ollama|openai_compat|systemone; omit for openai_compat
     url: https://ollama.com/           # required for openai_compat, optional for the other two
     api_key: "$OLLAMA_API_KEY"         # optional; empty = no auth. $VAR / ${VAR} expand from the environment
   - name: openrouter                   # no type: most hosted APIs speak the OpenAI protocol
@@ -232,16 +232,30 @@ providers:                             # required: the backends models are serve
     extra:                             # openai_compat only; injected into every request body
       provider.sort: throughput
 
+  - name: openrouter-jev               # System One backend; url stops before /v1
+    type: systemone                    # the client appends /v1/systemone itself
+    url: https://openrouter.ai/api
+    api_key: "$OPENROUTER_API_KEY"
+
 models:                                # required: the models that can be selected
-  - name: main-model                   # unique local alias — what model: and --model refer to
-    provider: ollama-cloud             # must name an entry in providers:
-    model_name: glm-5.3-flash          # the id sent to the provider on the wire
-    context_window: 128000             # optional, default 128k
-    max_response_tokens: 32768         # optional, default 32k; caps one response
-    vision: false
-    reasoning_effort: ""               # optional; provider reasoning tier, e.g. low|medium|high (+ max on Ollama)
-    cost: {input: 1.0, output: 3.0}    # USD/MTok; cache_read/cache_write default 0.1x/1.25x input
+  llm:                                 # chat models (common.LLM)
+    - name: main-model                 # unique local alias — what model: and --model refer to
+      provider: ollama-cloud           # must name an entry in providers:
+      model_name: glm-5.3-flash        # the id sent to the provider on the wire
+      context_window: 128000           # optional, default 128k
+      max_response_tokens: 32768       # optional, default 32k; caps one response
+      vision: false
+      reasoning_effort: ""             # optional; provider reasoning tier, e.g. low|medium|high (+ max on Ollama)
+      cost: {input: 1.0, output: 3.0}  # USD/MTok; cache_read/cache_write default 0.1x/1.25x input
+  systemone:                           # decision models (common.SystemOne)
+    - name: jev                        # same alias namespace as llm: — a name lives in one list
+      provider: openrouter-jev         # must name a systemone provider
+      model_name: typesafe/jev-1.13    # "jev-latest" against TypeSafe's own endpoint
 ```
+
+A bare list under `models:` is still read as `models.llm:`, so configs written before the split keep working.
+
+**System One models** answer typed questions instead of producing text: one *state* plus a map of Choice/Score/Noul questions in, one calibrated typed answer each out (`pkg/providers/protocols/systemone`). They take only those three keys — the answer is a fixed-size typed value, so there is nothing to cap and output is not billed, and the model takes no images and has no reasoning tier. They are not selectable with `--model`: `model:` and every other model ref names a `models.llm:` entry.
 
 ### All options
 
@@ -274,7 +288,7 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `permissions` | section | unset | — | Per-tool overrides of the default permission policy; see below. |
 | `mcp_servers` | list | `[]` | — (additive with `--mcp-server`) | MCP servers to mount; file entries and flag entries both apply. |
 | `providers` | list | **required** | `--provider` (merged by name) | Backends models are served from; see below. |
-| `models` | list | **required** | — | Model definitions; see below. |
+| `models` | mapping | **required** | — | Model definitions under `llm:` and `systemone:` (a bare list is read as `llm:`); see below. |
 
 `permissions` keys. The default policy asks for `bash`, `Write`, `Edit`, `repl`, `spawn_agent` and every `mcp:`-origin tool, and allows everything else. Each list here is merged into that default, and a tool named in one list is removed from the other two — so `allow: [Read, Write, Edit]` stops those prompts while `bash` and MCP tools keep asking. Names match case-insensitively. Precedence at call time is Deny > Ask > Allow > `ask_origins`.
 
@@ -298,12 +312,12 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Unique label, referenced by `models[].provider`. Also how the backend identifies itself in logs and errors. |
-| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, or `openai_compat`. Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
+| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` stops before `/v1`, which the client appends). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
 | `url` | URL | required for `openai_compat` | Endpoint. Required for `openai_compat`, which has nothing to default to. Optional for `anthropic` (defaults to `https://api.anthropic.com`) and `ollama` (defaults to **`https://ollama.com/`, the cloud endpoint** — set it explicitly to `http://localhost:11434` for a local daemon). |
 | `api_key` | string | unset | Omitted or empty means no auth (a local Ollama). Reference the environment rather than writing the secret: `api_key: "$OLLAMA_API_KEY"`. |
 | `extra` | map | unset | Fields injected into every request body, by dotted path (`provider.sort: throughput`). `openai_compat` only — silently ignored on the other types. Values are unvalidated: a bad key fails at the provider on the first request, not at startup. One key is reserved: `max_completion_tokens: true` renames the token-limit parameter instead of adding a field, which is what current OpenAI models require. |
 
-`models[]` fields (also the schema for inline JSON model refs). Note `name` and `model_name` are different things: `name` is the alias you refer to the model by, `model_name` is the id the provider knows it as.
+`models.llm[]` fields (also the schema for inline JSON model refs). `models.systemone[]` takes `name`, `provider` and `model_name` only. Note `name` and `model_name` are different things: `name` is the alias you refer to the model by, `model_name` is the id the provider knows it as.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

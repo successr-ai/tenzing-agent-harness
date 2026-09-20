@@ -17,6 +17,11 @@ import (
 type deps struct {
 	models *modelregistry.Registry
 	llms   llmSource
+	// judges hands out System One clients for models declared under
+	// models.systemone:. Nothing in the harness consumes one yet — the
+	// config and the factory are wired so a caller can, and the seam is
+	// here rather than reaching into the factory from a feature later.
+	judges systemOneSource
 }
 
 // llmSource hands out LLM clients for resolved models. *modelregistry.Factory
@@ -26,18 +31,25 @@ type llmSource interface {
 	Get(rm modelregistry.ResolvedModel) (common.LLM, error)
 }
 
+// systemOneSource hands out System One clients for resolved decision models,
+// the common.SystemOne counterpart to llmSource.
+type systemOneSource interface {
+	GetSystemOne(rs modelregistry.ResolvedSystemOne) (common.SystemOne, error)
+}
+
 // buildDeps merges --provider JSON definitions over the config file's
 // providers, then builds the registry and client factory from the result.
-func buildDeps(providers []cfgfile.Provider, entries []cfgfile.ModelEntry, providerFlags []string) (*deps, error) {
+func buildDeps(providers []cfgfile.Provider, models cfgfile.ModelsSection, providerFlags []string) (*deps, error) {
 	merged, err := modelregistry.MergeProviderFlags(providers, providerFlags)
 	if err != nil {
 		return nil, err
 	}
-	reg, err := modelregistry.Build(merged, entries)
+	reg, err := modelregistry.Build(merged, models)
 	if err != nil {
 		return nil, err
 	}
-	return &deps{models: reg, llms: modelregistry.NewFactory()}, nil
+	factory := modelregistry.NewFactory()
+	return &deps{models: reg, llms: factory, judges: factory}, nil
 }
 
 // resolve maps a model ref (alias or inline JSON) to a definition, listing
@@ -53,4 +65,14 @@ func (d *deps) resolve(s string) (modelregistry.ResolvedModel, error) {
 		return modelregistry.ResolvedModel{}, fmt.Errorf("%w; declared models:\n%s", err, d.models.List())
 	}
 	return rm, nil
+}
+
+// resolveSystemOne maps a System One alias to its model and provider,
+// listing the declared models on failure the way resolve does.
+func (d *deps) resolveSystemOne(s string) (modelregistry.ResolvedSystemOne, error) {
+	rs, err := d.models.ResolveSystemOne(strings.TrimSpace(s))
+	if err != nil {
+		return modelregistry.ResolvedSystemOne{}, fmt.Errorf("%w; declared models:\n%s", err, d.models.List())
+	}
+	return rs, nil
 }

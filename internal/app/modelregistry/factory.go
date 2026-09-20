@@ -12,6 +12,7 @@ import (
 	protoanthropic "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/anthropic"
 	protoollama "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ollama"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/systemone"
 )
 
 // maxCompletionTokensKey is the one Extra key that is not a request field.
@@ -49,6 +50,11 @@ func buildLLM(rm ResolvedModel) (common.LLM, error) {
 		return protoollama.NewClient(def, opts...)
 	case config.DefaultProviderType:
 		return openai_compat.NewClient(def, compatOptions(def, prov)...)
+	case config.SystemOneProviderType:
+		// Reachable only through an inline --model ref: config validation
+		// keeps a systemone provider out of models.llm:.
+		return nil, fmt.Errorf("%s is served by a %s provider (%s): it is a System One model and answers typed questions, not chat turns",
+			def.Name, config.SystemOneProviderType, prov.Name)
 	default:
 		return nil, fmt.Errorf("build LLM for %s: %w", def.Name, common.ErrUnknownProvider)
 	}
@@ -92,19 +98,38 @@ func extraOptions(extra map[string]any) []openai_compat.ClientOption {
 	return opts
 }
 
-// Factory builds LLM clients on demand via buildLLM and reuses one client
-// per distinct provider/model/reasoning-effort, so model switch-back is free
-// and roles sharing a model share a client (effort is in the key because
-// inline model refs can name the same model at different tiers). Construct
-// with NewFactory and inject it; there is no process-wide instance.
+// buildSystemOne constructs a System One client for a resolved decision
+// model. Endpoint and key come from the provider entry, as for every other
+// protocol; an empty URL keeps the client's own default (TypeSafe's).
+func buildSystemOne(rs ResolvedSystemOne) (common.SystemOne, error) {
+	if rs.Provider.Type != config.SystemOneProviderType {
+		return nil, fmt.Errorf("provider %s has type %q, not %s", rs.Provider.Name, rs.Provider.Type, config.SystemOneProviderType)
+	}
+	return systemone.NewClient(
+		systemone.WithAPIKey(rs.Provider.APIKey),
+		systemone.WithBaseURL(rs.Provider.URL),
+		systemone.WithModel(rs.Name))
+}
+
+// Factory builds clients on demand and reuses one per distinct
+// provider/model/reasoning-effort, so model switch-back is free and roles
+// sharing a model share a client (effort is in the key because inline model
+// refs can name the same model at different tiers). Construct with
+// NewFactory and inject it; there is no process-wide instance. LLM and
+// System One clients live in separate caches because they are separate
+// interfaces, not two flavours of one.
 type Factory struct {
-	mu      sync.Mutex
-	clients map[string]common.LLM
+	mu         sync.Mutex
+	clients    map[string]common.LLM
+	systemOnes map[string]common.SystemOne
 }
 
 // NewFactory returns an empty client cache.
 func NewFactory() *Factory {
-	return &Factory{clients: make(map[string]common.LLM)}
+	return &Factory{
+		clients:    make(map[string]common.LLM),
+		systemOnes: make(map[string]common.SystemOne),
+	}
 }
 
 // Get returns the cached client for the resolved model, building it on
@@ -122,4 +147,21 @@ func (f *Factory) Get(rm ResolvedModel) (common.LLM, error) {
 	}
 	f.clients[cacheKey] = llm
 	return llm, nil
+}
+
+// GetSystemOne returns the cached System One client for the resolved model,
+// building it on first use.
+func (f *Factory) GetSystemOne(rs ResolvedSystemOne) (common.SystemOne, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cacheKey := fmt.Sprintf("%s|%s", rs.Provider.Name, rs.Name)
+	if client, ok := f.systemOnes[cacheKey]; ok {
+		return client, nil
+	}
+	client, err := buildSystemOne(rs)
+	if err != nil {
+		return nil, fmt.Errorf("build System One client for %s: %w", rs.Name, err)
+	}
+	f.systemOnes[cacheKey] = client
+	return client, nil
 }

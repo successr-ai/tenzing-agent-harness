@@ -15,13 +15,15 @@ var testProviders = []config.Provider{
 	{Name: "local", Type: "ollama", URL: "http://localhost:11434"},
 	{Name: "cloud", Type: "ollama", URL: "https://ollama.com/", APIKey: "sk-cloud"},
 	{Name: "claude", Type: "anthropic", URL: "https://api.anthropic.com"},
+	{Name: "typesafe", Type: config.SystemOneProviderType, URL: "https://api.typesafe.ai", APIKey: "sk-ts"},
+	{Name: "openrouter-jev", Type: config.SystemOneProviderType, URL: "https://openrouter.ai/api", APIKey: "sk-or"},
 }
 
 // testRegistry builds a registry over testProviders plus the given entries,
 // failing the test on error.
 func testRegistry(t *testing.T, entries ...config.ModelEntry) *Registry {
 	t.Helper()
-	reg, err := Build(testProviders, entries)
+	reg, err := Build(testProviders, config.ModelsSection{LLM: entries})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -163,7 +165,7 @@ func TestBuildRegistry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reg, err := Build(testProviders, tt.entries)
+			reg, err := Build(testProviders, config.ModelsSection{LLM: tt.entries})
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -282,5 +284,74 @@ func TestPricingReturnsACopy(t *testing.T) {
 	delete(p, "opus")
 	if _, ok := reg.pricing["opus"]; !ok {
 		t.Error("Pricing handed out the internal map; a caller delete mutated it")
+	}
+}
+
+// System One models resolve by alias to their own kind, and the two kinds
+// stay apart: a ref never silently crosses from one index to the other.
+func TestResolveSystemOne(t *testing.T) {
+	reg, err := Build(testProviders, config.ModelsSection{
+		LLM: []config.ModelEntry{{Name: "chat", Provider: "local", ModelName: "glm-5.3"}},
+		SystemOne: []config.SystemOneEntry{
+			{Name: "jev", Provider: "typesafe", ModelName: "jev-latest"},
+			{Name: "jev-or", Provider: "openrouter-jev", ModelName: "typesafe/jev-1.13"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	rs, err := reg.ResolveSystemOne("jev-or")
+	if err != nil {
+		t.Fatalf("ResolveSystemOne: %v", err)
+	}
+	// Name is the wire id, and the provider travels with it: the OpenRouter
+	// entry must not pick up TypeSafe's endpoint.
+	if rs.Name != "typesafe/jev-1.13" || rs.Provider.URL != "https://openrouter.ai/api" {
+		t.Errorf("resolved = %+v", rs)
+	}
+	if got := reg.SystemOneNames(); len(got) != 2 || got[0] != "jev" || got[1] != "jev-or" {
+		t.Errorf("SystemOneNames = %v", got)
+	}
+
+	for _, tt := range []struct {
+		name, ref, wantErr string
+		systemOne          bool
+	}{
+		{name: "chat ref as System One", ref: "chat", systemOne: true, wantErr: "is a chat model"},
+		{name: "System One ref as chat", ref: "jev", wantErr: "is a System One model"},
+		{name: "unknown System One", ref: "nope", systemOne: true, wantErr: "not declared in models.systemone:"},
+		{name: "unknown chat", ref: "nope", wantErr: "not declared in models.llm:"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			if tt.systemOne {
+				_, err = reg.ResolveSystemOne(tt.ref)
+			} else {
+				_, err = reg.Resolve(tt.ref)
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	list := reg.List()
+	for _, want := range []string{"llm:", "systemone:", "jev-or", "typesafe/jev-1.13"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("List() missing %q:\n%s", want, list)
+		}
+	}
+}
+
+// A System One entry naming a provider that does not exist fails the build.
+// config.File.validate catches this first in production; Build is also
+// reachable from tests and library callers.
+func TestBuildRejectsUndeclaredSystemOneProvider(t *testing.T) {
+	_, err := Build(testProviders, config.ModelsSection{
+		SystemOne: []config.SystemOneEntry{{Name: "jev", Provider: "nope", ModelName: "jev-latest"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not declared in providers:") {
+		t.Fatalf("err = %v, want an undeclared-provider error", err)
 	}
 }

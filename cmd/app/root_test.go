@@ -547,3 +547,37 @@ func TestRootCmdConfigFile(t *testing.T) {
 		}
 	})
 }
+
+// The nested models: shape reaches the registry: --list-models shows both
+// kinds, grouped, with the System One model's wire id. The rest of the
+// root-command tests use the pre-split sequence shape, which is the other
+// half of this proof — both must keep working.
+func TestRootCmdListsSystemOneModels(t *testing.T) {
+	const yaml = "providers:\n" +
+		"  - name: local\n    type: ollama\n    url: http://localhost:11434\n" +
+		"  - name: openrouter-jev\n    type: systemone\n    url: https://openrouter.ai/api\n" +
+		"models:\n" +
+		"  llm:\n    - name: alpha\n      provider: local\n      model_name: glm-5.3\n" +
+		"  systemone:\n    - name: jev\n      provider: openrouter-jev\n      model_name: typesafe/jev-1.13\n" +
+		"model: alpha\n"
+
+	path := filepath.Join(t.TempDir(), "tenzing.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	redirectUserConfig(t)
+
+	out := &bytes.Buffer{}
+	cmd := newRootCmd()
+	cmd.SetOut(out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--list-models", "--config", path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"llm:", "alpha", "systemone:", "jev", "typesafe/jev-1.13"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--list-models missing %q:\n%s", want, out.String())
+		}
+	}
+}
