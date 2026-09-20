@@ -364,10 +364,17 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
         TurnResult{FinalAnswer, Iterations, Duration}
    h. Else (tool calls present) — batch semantics:
       - StartToolExecution
-      - DECISION PHASE, sequential in issue order: extensions.RunToolCall(ctx, tcc)
-        (load-bearing; hooks may escalate Decision to Deny/AskUser, never
-        de-escalate; a hook error itself also blocks execution with a synthetic
-        result, distinct from an explicit Deny). AskUser calls emit their
+      - DECISION PHASE, one ToolCallContext per call built up front, then
+        extensions.RunToolBatch(ctx, contexts) once over the whole issue list
+        (load-bearing; for policies judged cheaper over the batch than call by
+        call — one request to a judging model instead of one per call), then
+        extensions.RunToolCall(ctx, tcc) sequentially in issue order over the
+        same contexts, so a batch escalation survives into the per-call phase.
+        Both are load-bearing; hooks may escalate Decision to Deny/AskUser,
+        never de-escalate; a hook error itself also blocks execution with a
+        synthetic result, distinct from an explicit Deny — a RunToolBatch
+        error blocks every call in the batch and skips the per-call hooks,
+        since nothing will execute. AskUser calls emit their
         ApprovalRequestedEvent immediately (non-blocking).
       - EXECUTION PHASE, segmented: runs of consecutive read-only calls (per
         ToolPort.ReadOnly) execute concurrently — one goroutine per call,

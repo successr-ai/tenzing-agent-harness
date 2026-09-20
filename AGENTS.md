@@ -173,6 +173,14 @@ All non-invariant runner behavior flows through `runner.AgentRunnerOption` funct
 - Provide a `core.Emitter` to receive structured events from the loop (`WithEmitter`)
 - Provide `WithTextDeltaHandler`/`WithThinkingDeltaHandler` callbacks for streaming text — `func(runnerID, text string)`; the runner tags each delta with its own id so multiplexed consumers (RPC mode) can correlate deltas per turn
 
+Tool gating has two hook points. `core.ToolCallHook` (`OnToolCall`) sees one
+call at a time, in issue order; `core.ToolBatchHook` (`OnToolBatch`) sees
+every call of the iteration at once and runs first, for policies whose
+decision is cheaper or better made over the whole batch — one request to a
+judging model instead of one per call. Both are load-bearing, both may
+escalate a `Decision` and never lower one, and the per-call hooks run over the
+same `*ToolCallContext` values the batch hook saw, so its escalations survive.
+
 System reminders (todo state, etc.) no longer flow through the runner. They
 are injected each iteration by `core.Extension`s implementing
 `core.BeforeIterationHook` (e.g. `internal/features/reminders`), registered

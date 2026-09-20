@@ -147,3 +147,84 @@ func TestDecisionCannotBeLowered(t *testing.T) {
 		t.Fatalf("de-escalation must be restored to Deny, got %v", tcc.Decision)
 	}
 }
+
+// batchExt records the batch it saw and applies one decision per call by
+// name, so a test can escalate some calls of an issue list and not others.
+type batchExt struct {
+	name     string
+	err      error
+	saw      [][]string // one entry per OnToolBatch call, tool names in issue order
+	decide   map[string]Decision
+	reason   string
+	sawCalls int // per-call OnToolCall invocations, when also a ToolCallHook
+}
+
+func (b *batchExt) Name() string { return b.name }
+func (b *batchExt) OnToolBatch(_ context.Context, batch []*ToolCallContext) error {
+	names := make([]string, len(batch))
+	for i, tcc := range batch {
+		names[i] = tcc.Call.Name
+		if d, ok := b.decide[tcc.Call.Name]; ok {
+			tcc.Decision = d
+			tcc.Reason = b.reason
+		}
+	}
+	b.saw = append(b.saw, names)
+	return b.err
+}
+
+func TestToolBatchHookSeesWholeBatchInIssueOrder(t *testing.T) {
+	b := &batchExt{name: "judge", decide: map[string]Decision{"write": AskUser}, reason: "risky"}
+	exts := NewExtensions(b)
+	batch := []*ToolCallContext{
+		{Call: &ToolCall{Name: "read"}},
+		{Call: &ToolCall{Name: "write"}},
+	}
+	if err := exts.RunToolBatch(context.Background(), batch); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(b.saw) != 1 || len(b.saw[0]) != 2 || b.saw[0][0] != "read" || b.saw[0][1] != "write" {
+		t.Fatalf("batch not delivered whole, in issue order: %v", b.saw)
+	}
+	if batch[0].Decision != Allow {
+		t.Fatalf("untouched call must keep its decision, got %v", batch[0].Decision)
+	}
+	if batch[1].Decision != AskUser || batch[1].Reason != "risky" {
+		t.Fatalf("escalation lost: %+v", batch[1])
+	}
+}
+
+// batchLowerExt attempts to de-escalate every call of the batch.
+type batchLowerExt struct{}
+
+func (batchLowerExt) Name() string { return "batch-lowerer" }
+func (batchLowerExt) OnToolBatch(_ context.Context, batch []*ToolCallContext) error {
+	for _, tcc := range batch {
+		tcc.Decision = Allow
+	}
+	return nil
+}
+
+func TestToolBatchDecisionCannotBeLowered(t *testing.T) {
+	exts := NewExtensions(batchLowerExt{})
+	batch := []*ToolCallContext{{Call: &ToolCall{Name: "bash"}, Decision: Deny, Reason: "nope"}}
+	if err := exts.RunToolBatch(context.Background(), batch); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if batch[0].Decision != Deny {
+		t.Fatalf("de-escalation must be restored, got %v", batch[0].Decision)
+	}
+}
+
+func TestToolBatchPreHookErrorBlocks(t *testing.T) {
+	failing := &batchExt{name: "f", err: errors.New("boom")}
+	later := &batchExt{name: "later"}
+	exts := NewExtensions(failing, later)
+	batch := []*ToolCallContext{{Call: &ToolCall{Name: "bash"}}}
+	if err := exts.RunToolBatch(context.Background(), batch); err == nil {
+		t.Fatal("pre-hook error must propagate")
+	}
+	if len(later.saw) != 0 {
+		t.Fatal("later batch hooks must not run after a pre-hook error")
+	}
+}

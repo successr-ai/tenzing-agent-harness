@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -993,5 +994,127 @@ func TestBatchEightConcurrentCallsContextSequence(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("context call[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// orderExt is both a batch and a per-call hook: it records the order the loop
+// runs them in, denies one named tool from the batch phase, and refuses to
+// execute anything the batch already denied.
+type orderExt struct {
+	mu      sync.Mutex
+	order   []string
+	denyRaw string
+}
+
+func (o *orderExt) Name() string { return "order" }
+
+func (o *orderExt) OnToolBatch(_ context.Context, batch []*ToolCallContext) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	names := make([]string, len(batch))
+	for i, tcc := range batch {
+		names[i] = tcc.Call.Name
+		if tcc.Call.Name == o.denyRaw {
+			tcc.Decision = Deny
+			tcc.Reason = "batch says no"
+		}
+	}
+	o.order = append(o.order, "batch:"+strings.Join(names, ","))
+	return nil
+}
+
+func (o *orderExt) OnToolCall(_ context.Context, tcc *ToolCallContext) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.order = append(o.order, "call:"+tcc.Call.Name+":"+decisionName(tcc.Decision))
+	return nil
+}
+
+func decisionName(d Decision) string {
+	switch d {
+	case Deny:
+		return "deny"
+	case AskUser:
+		return "ask"
+	default:
+		return "allow"
+	}
+}
+
+// TestRunTurnToolBatchHookRunsBeforePerCallHooks pins the two guarantees the
+// batch hook exists for: it sees the whole issue list once, before any
+// per-call hook, and a decision it escalates is the decision the loop acts on.
+func TestRunTurnToolBatchHookRunsBeforePerCallHooks(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(
+			ToolCall{ID: "tc1", Name: "safe", Input: `{}`},
+			ToolCall{ID: "tc2", Name: "dangerous", Input: `{}`},
+		),
+		{FinalAnswer: "done"},
+	}}
+	tools := newFakeTools(nil)
+	ext := &orderExt{denyRaw: "dangerous"}
+
+	l := newTestLoop(t, model, tools, newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Extensions = NewExtensions(ext)
+	})
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"batch:safe,dangerous", "call:safe:allow", "call:dangerous:deny"}
+	if len(ext.order) != len(want) {
+		t.Fatalf("hook order = %v, want %v", ext.order, want)
+	}
+	for i := range want {
+		if ext.order[i] != want[i] {
+			t.Fatalf("hook order = %v, want %v", ext.order, want)
+		}
+	}
+
+	executed := tools.executed()
+	if len(executed) != 1 || executed[0].Name != "safe" {
+		t.Fatalf("batch Deny must block execution, executed: %+v", executed)
+	}
+}
+
+// failingBatchExt blocks every call of the batch with an error.
+type failingBatchExt struct{ perCall int }
+
+func (f *failingBatchExt) Name() string { return "failing-batch" }
+func (f *failingBatchExt) OnToolBatch(_ context.Context, _ []*ToolCallContext) error {
+	return errors.New("judge unreachable")
+}
+func (f *failingBatchExt) OnToolCall(_ context.Context, _ *ToolCallContext) error {
+	f.perCall++
+	return nil
+}
+
+// TestRunTurnToolBatchHookErrorBlocksTheBatch: a batch hook is load-bearing
+// like OnToolCall, so its error blocks every call it judged — and the
+// per-call hooks are skipped, since nothing will execute.
+func TestRunTurnToolBatchHookErrorBlocksTheBatch(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(ToolCall{ID: "tc1", Name: "safe", Input: `{}`}),
+		{FinalAnswer: "done"},
+	}}
+	tools := newFakeTools(nil)
+	fctx := newFakeContext()
+	ext := &failingBatchExt{}
+
+	l := newTestLoop(t, model, tools, fctx, func(cfg *LoopConfig) {
+		cfg.Extensions = NewExtensions(ext)
+	})
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.executed()) != 0 {
+		t.Fatalf("batch hook error must block execution, executed %d", len(tools.executed()))
+	}
+	if ext.perCall != 0 {
+		t.Fatalf("per-call hooks must be skipped when the batch is already blocked, ran %d", ext.perCall)
+	}
+	if len(fctx.toolResults) != 1 || !fctx.toolResults[0][0].IsError {
+		t.Fatalf("blocked call must feed an error result back to the model: %+v", fctx.toolResults)
 	}
 }

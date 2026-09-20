@@ -512,9 +512,20 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 		// Post-hooks run sequentially in issue order after the barrier, and
 		// the context store is only touched after it.
 		pending := make([]batchCall, len(reasoningResult.ToolCalls))
-		for i, toolCall := range reasoningResult.ToolCalls {
-			tcc := &ToolCallContext{RunnerID: l.id, Call: &toolCall, Origin: l.tools.Origin(toolCall.Name)}
-			hookErr := l.extensions.RunToolCall(ctx, tcc)
+		contexts := make([]*ToolCallContext, len(reasoningResult.ToolCalls))
+		for i := range reasoningResult.ToolCalls {
+			call := reasoningResult.ToolCalls[i]
+			contexts[i] = &ToolCallContext{RunnerID: l.id, Call: &call, Origin: l.tools.Origin(call.Name)}
+		}
+		// Batch hooks judge the whole issue list first; the per-call hooks
+		// below then run over the same contexts, so a batch escalation
+		// survives into the decision each call ends up with.
+		batchErr := l.extensions.RunToolBatch(ctx, contexts)
+		for i, tcc := range contexts {
+			hookErr := batchErr
+			if hookErr == nil {
+				hookErr = l.extensions.RunToolCall(ctx, tcc)
+			}
 			bc := batchCall{call: *tcc.Call, decision: tcc.Decision, reason: tcc.Reason, hookErr: hookErr}
 			if hookErr == nil && tcc.Decision == AskUser {
 				if l.skipPermissions {

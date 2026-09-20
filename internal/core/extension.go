@@ -79,6 +79,17 @@ type BeforeIterationHook interface {
 type ToolCallHook interface {
 	OnToolCall(ctx context.Context, tcc *ToolCallContext) error
 }
+
+// ToolBatchHook sees every tool call of one iteration at once, before the
+// per-call OnToolCall hooks run. It exists for policies whose decision is
+// cheaper or better made over the whole batch than call by call — one
+// request to a judging model instead of one per call. Same contract as
+// OnToolCall otherwise: load-bearing, may mutate each Call.Input, may
+// escalate each Decision and never lower one. The loop passes the same
+// contexts on to the per-call hooks, so an escalation here survives.
+type ToolBatchHook interface {
+	OnToolBatch(ctx context.Context, batch []*ToolCallContext) error
+}
 type ToolResultHook interface {
 	OnToolResult(ctx context.Context, trc *ToolResultContext) error
 }
@@ -107,6 +118,7 @@ type Extensions struct {
 	sessionStart    []SessionStartHook
 	sessionEnd      []SessionEndHook
 	beforeIteration []BeforeIterationHook
+	toolBatch       []ToolBatchHook
 	toolCall        []ToolCallHook
 	toolResult      []ToolResultHook
 	afterTurn       []AfterTurnHook
@@ -130,6 +142,10 @@ func NewExtensions(exts ...Extension) *Extensions {
 		if h, ok := ext.(BeforeIterationHook); ok {
 			e.beforeIteration = append(e.beforeIteration, h)
 			hooks = append(hooks, "before_iteration")
+		}
+		if h, ok := ext.(ToolBatchHook); ok {
+			e.toolBatch = append(e.toolBatch, h)
+			hooks = append(hooks, "tool_batch")
 		}
 		if h, ok := ext.(ToolCallHook); ok {
 			e.toolCall = append(e.toolCall, h)
@@ -183,6 +199,26 @@ func (e *Extensions) RunBeforeIteration(ctx context.Context, tc *TurnContext) er
 	for _, h := range e.beforeIteration {
 		if err := h.BeforeIteration(ctx, tc); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// RunToolBatch is load-bearing, and runs before any RunToolCall of the same
+// iteration. De-escalation is restored per call, as in RunToolCall.
+func (e *Extensions) RunToolBatch(ctx context.Context, batch []*ToolCallContext) error {
+	for _, h := range e.toolBatch {
+		before := make([]Decision, len(batch))
+		for i, tcc := range batch {
+			before[i] = tcc.Decision
+		}
+		if err := h.OnToolBatch(ctx, batch); err != nil {
+			return err
+		}
+		for i, tcc := range batch {
+			if tcc.Decision < before[i] { // de-escalation attempt: restore
+				tcc.Decision = before[i]
+			}
 		}
 	}
 	return nil
