@@ -214,6 +214,9 @@ internal/
 │   │   ├── prompts.go                  DefaultSystemPrompt()
 │   │   └── default_main.gotmpl         Base system prompt template
 │   ├── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
+│   ├── systemone/                      ToolBatchHook + BeforeIterationHook — a System One decision model gates
+│   │                                    tools, calls for advisor consults, and routes the turn's LLM (fail-open,
+│   │                                    escalate-only, two batched Evaluate calls per iteration); not wired yet
 │   ├── skills/                         Skill discovery & lazy loading + its Ext
 │   │   ├── ext.go                      Ext — ToolProvider (list_skills/load_skill) + PromptContributor
 │   │   │                                (skills index); skills.NewExt

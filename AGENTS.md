@@ -173,6 +173,14 @@ All non-invariant runner behavior flows through `runner.AgentRunnerOption` funct
 - Provide a `core.Emitter` to receive structured events from the loop (`WithEmitter`)
 - Provide `WithTextDeltaHandler`/`WithThinkingDeltaHandler` callbacks for streaming text — `func(runnerID, text string)`; the runner tags each delta with its own id so multiplexed consumers (RPC mode) can correlate deltas per turn
 
+`internal/features/systemone` is the harness-side consumer of a System One
+decision model (`common.SystemOne`, built by `modelregistry.Factory.GetSystemOne`):
+it gates tool calls, judges when the executor should consult its advisor, and
+routes the turn's LLM, in two batched `Evaluate` calls per iteration. Fail-open
+and escalate-only throughout — see `internal/features/systemone/AGENTS.md`. It is
+not wired into `harness.New` or the config yet (`docs/adrs/2026-09-20-systemone-harness/PLAN.md`,
+Steps 1, 5, 6).
+
 Tool gating has two hook points. `core.ToolCallHook` (`OnToolCall`) sees one
 call at a time, in issue order; `core.ToolBatchHook` (`OnToolBatch`) sees
 every call of the iteration at once and runs first, for policies whose

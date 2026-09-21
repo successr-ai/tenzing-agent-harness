@@ -214,3 +214,32 @@ type TaskCompletedEvent struct {
 	BaseEvent
 	TaskID string `json:"task_id"`
 }
+
+// --- Decision models ---
+
+// SystemOneDecisionEvent reports one batch of questions put to a System One
+// model and what the harness did with the answers. Emitted for every batch,
+// including the ones that failed — a decision model that silently gates tools
+// or swaps the LLM is otherwise impossible to debug. Error non-empty means the
+// batch fell back and changed nothing.
+type SystemOneDecisionEvent struct {
+	BaseEvent
+	Batch       string              `json:"batch"` // which question set: "turn" or "tools"
+	Model       string              `json:"model"` // the version that answered, which may differ from the alias asked
+	Duration    time.Duration       `json:"duration_ms"`
+	InputTokens int64               `json:"input_tokens"`
+	Decisions   []SystemOneDecision `json:"decisions"`
+	Error       string              `json:"error,omitempty"`
+}
+
+// SystemOneDecision is one question's answer and the action it caused.
+type SystemOneDecision struct {
+	Question   string  `json:"question"`
+	Answer     string  `json:"answer"`
+	Confidence float64 `json:"confidence"`
+	// Action is what the harness did: "none", "ask", "deny", "remind" or
+	// "route".
+	Action string `json:"action"`
+	// Target is what the action applied to — a tool name, or a model alias.
+	Target string `json:"target,omitempty"`
+}

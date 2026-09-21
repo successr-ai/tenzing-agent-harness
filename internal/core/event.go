@@ -34,6 +34,7 @@ const (
 	EventModelChanged          EventType = "model.changed"
 	EventThinkingChanged       EventType = "thinking.changed"
 	EventImagesAttached        EventType = "images.attached"
+	EventSystemOneDecision     EventType = "systemone.decision"
 )
 
 // Event is the common interface for all harness events.
