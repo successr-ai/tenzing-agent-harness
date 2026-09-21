@@ -104,6 +104,7 @@ The same pattern serves the other roles: `WithSubagentLLM` and `WithBlackboardLL
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted per conversation to `<UserConfigDir>/tenzing/.agent_memory-<date>-<agent-id>.md` (resume with `WithConversationID`)
 - **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state). Strictly an agent→subagent channel: one-shot subagents deposit findings before disconnecting; not designed for long-lived agents to share results
 - **Permissions & read-only mode** — code-executing/file-writing tools require approval by default (`ApprovalRequestedEvent`, `POST /approve`, 120s timeout). Bash commands are parsed with `mvdan.cc/sh` and classified per simple command (`read`, `fs:write`, `fs:delete`, `net`, `vcs`, `unknown`): fully read-only pipelines run without a prompt, mutating or unknown commands prompt with a per-segment explanation, and `settings.json` layers allow/deny globs, category rules and table overrides on top (approve once, for the session, or always). `--read-only` / `WithReadOnly()` instead denies every tool not marked read-only with no prompts ever — reads, read-classified bash, `advisor`, and `spawn_agent` (children equally gated) still run; `--no-permissions` / `WithPermissionsDisabled()` disables gating entirely
+- **Decision-model consumers** — a System One model (TypeSafe's Jev, `systemone_model:`) can gate tool calls, call for advisor consults, and route the turn's model, in two batched requests per loop iteration. Every consumer fails open and only ever tightens a decision; each batch emits `systemone.decision` with the answers, the thresholds' verdicts and the model version that answered
 - **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
 - **Session persistence** — conversations recorded as JSONL per working directory; resume with `--resume <id>` or `-c` (latest), manage over HTTP (`GET/DELETE/PATCH /sessions`, `GET /messages`)
 - **Unified config file** — `tenzing.yaml` holds every durable setting (models incl. the custom-model registry, advisor, subagent, budgets, permissions, MCP servers, serve settings); `--config` / `TENZING_CONFIG` pick the file (default `./tenzing.yaml`, then `<user config dir>/tenzing/tenzing.yaml`), precedence CLI flag > env var > file > default; model flags alternatively take an inline JSON definition (see Quick Start)
@@ -255,7 +256,7 @@ models:                                # required: the models that can be select
 
 A bare list under `models:` is still read as `models.llm:`, so configs written before the split keep working.
 
-**System One models** answer typed questions instead of producing text: one *state* plus a map of Choice/Score/Noul questions in, one calibrated typed answer each out (`pkg/providers/protocols/systemone`). They take only those three keys — the answer is a fixed-size typed value, so there is nothing to cap and output is not billed, and the model takes no images and has no reasoning tier. They are not selectable with `--model`: `model:` and every other model ref names a `models.llm:` entry.
+**System One models** answer typed questions instead of producing text: one *state* plus a map of Choice/Score/Noul questions in, one calibrated typed answer each out (`pkg/providers/protocols/systemone`). They take only those three keys — the answer is a fixed-size typed value, so there is nothing to cap and output is not billed, and the model takes no images and has no reasoning tier. They are not selectable with `--model`: `model:` and every other model ref names a `models.llm:` entry. One is put to work by naming it in `systemone_model:` — see the `systemone` keys below.
 
 ### All options
 
@@ -270,6 +271,8 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `advisor_nudge` | int | `0` (off) | `--advisor-nudge` | Iteration from which an unconsulted executor gets a reminder; requires `advisor_model`. |
 | `advisor_cadence` | int | `0` (= 6) | `--advisor-cadence` | Max loop iterations between advisor consults before every tool (read-only included) is blocked until the executor consults. `-1` disables; requires `advisor_model`. |
 | `advisor_max_calls` | int | `0` (= 30) | `--advisor-max-calls` | Cap on advisor consults per turn; further calls are denied. Requires `advisor_model`. |
+| `systemone_model` | alias | unset | `--systemone-model` | Names a `models.systemone:` entry and turns on the decision-model consumers: tool gating, advisor-need judgment, model routing. Alias only — a System One model cannot be written inline. |
+| `systemone` | section | unset | — | Tunes those consumers; no effect without `systemone_model`. See below. |
 | `max_turn_tokens` | int | `0` (unlimited) | `--max-turn-tokens` | Per-turn token budget, input+output cumulative. Distinct from a model's `max_response_tokens`, which caps a single response. |
 | `max_iterations` | int | `0` (unlimited) | `--max-iterations` | Per-turn iteration budget. |
 | `max_wall_clock` | duration | `"0s"` (unlimited) | `--max-wall-clock` | Per-turn wall-clock budget. |
@@ -299,6 +302,28 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `deny` | list | Tools that are always blocked. |
 | `ask_origins` | list | Mount-origin prefixes whose unlisted tools require approval. Non-empty replaces the default `["mcp:"]`. |
 
+`systemone` keys. A System One model (declared under `models.systemone:`, above) makes three kinds of harness decision, in two batched requests per loop iteration. Every consumer fails open: an unreachable endpoint, a malformed answer or a low-confidence one all leave the harness doing exactly what it would have done without the model. The gate only ever tightens a decision — it cannot approve what the permission policy would ask about. Thresholds are probabilities; their defaults live with the question wording they were calibrated against, in `internal/features/systemone/questions.go`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `recent_messages` | int | `4` | Trailing conversation messages included in every question's state. This content leaves the machine, and accuracy falls as the state fills with detail the decision does not need. `0` sends none. |
+| `gate.enabled` | bool | `true` | Judge each pending tool call: out of scope, or irreversible. |
+| `gate.ask_above` | float | `0.6` | Probability above which a call is escalated to an approval prompt. |
+| `gate.deny_above` | float | `0.9` | Probability above which an out-of-scope call is refused outright. Irreversibility alone never denies — a destructive call you did ask for reaches a human instead. |
+| `advisor.enabled` | bool | `true` | Judge each iteration whether the executor should consult its advisor before acting. Turn off where the `advisor` tool is not mounted. |
+| `advisor.consult_above` | float | `0.7` | Probability above which state-changing calls are blocked until `advisor` runs. Read-only orientation always passes. |
+| `routing.enabled` | bool | auto | Pick the turn's model from the `models.llm:` entries carrying a `description:`. Enables itself when there are two or more; setting it `true` with fewer is a startup error. |
+| `routing.min_confidence` | float | `0.5` | Confidence below which a routing choice is ignored and the configured model keeps serving. |
+
+```yaml
+systemone_model: jev
+systemone:
+  gate:
+    deny_above: 0.95     # tighter: deny only what it is nearly sure about
+  advisor:
+    enabled: false       # no advisor tool mounted
+```
+
 `mcp_servers` entries:
 
 | Key | Type | Required | Description |
@@ -326,6 +351,7 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `model_name` | string | required | The id sent to the provider on the wire (e.g. `glm-5.3-flash`). |
 | `context_window` | int | `131072` | Context window size in tokens. |
 | `max_response_tokens` | int | `32768` | Max output tokens in a single response. Distinct from the top-level `max_turn_tokens`, which bounds a whole turn. |
+| `description` | string | unset | What this model is for. Its one consumer is System One routing: a described model becomes a routing candidate and the text is what the decision model is told the option means. Omit to keep a model out of routing. |
 | `vision` | bool | `false` | Marks the model as accepting image input; image-bearing queries are rejected without it. |
 | `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: careful-model`). |
 | `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1x input), `cache_write` (default 1.25x input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |

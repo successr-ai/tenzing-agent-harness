@@ -18,9 +18,9 @@ type deps struct {
 	models *modelregistry.Registry
 	llms   llmSource
 	// judges hands out System One clients for models declared under
-	// models.systemone:. Nothing in the harness consumes one yet — the
-	// config and the factory are wired so a caller can, and the seam is
-	// here rather than reaching into the factory from a feature later.
+	// models.systemone:. systemOneOption builds the one systemone_model:
+	// names; the seam is here rather than a feature reaching into the
+	// factory.
 	judges systemOneSource
 }
 

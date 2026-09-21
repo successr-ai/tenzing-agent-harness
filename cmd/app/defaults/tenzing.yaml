@@ -6,6 +6,28 @@
 # their own model unset.
 model: main-model
 
+# A System One decision model (see models.systemone below). Setting it lets
+# that model gate tool calls, judge when the agent should consult its advisor,
+# and pick which model serves the turn. Every decision fails open: if the
+# endpoint is unreachable the harness behaves exactly as it would without it,
+# and the gate can only tighten a permission decision, never loosen one.
+systemone_model: jev
+
+# Tunes the consumers above; no effect without systemone_model. Every key is
+# optional — omit the block entirely for the defaults shown.
+systemone:
+  recent_messages: 4     # trailing messages sent with each question; 0 = none
+  gate:
+    enabled: true
+    ask_above: 0.6       # escalate to an approval prompt above this
+    deny_above: 0.9      # refuse an out-of-scope call above this
+  advisor:
+    enabled: true        # needs advisor_model; nothing to consult otherwise
+    consult_above: 0.7
+  # routing:
+  #   enabled: true        # on by itself once two models.llm entries have a description
+  #   min_confidence: 0.5
+
 # Set permissions for the agent. The default is Read-only, which is safe for most users.
 permissions:
   allow: [Read, Write, Edit, repl]
@@ -55,6 +77,11 @@ models:
     - name: main-model
       provider: ollama-cloud
       model_name: glm-5.3-flash
+      # description: is documentation with one consumer — System One routing.
+      # A described model becomes a routing candidate and this text is what
+      # the decision model is told the option is for. Routing turns itself on
+      # once two entries here carry one.
+      description: Frontier model. Anything with a design decision in it.
       context_window: 999424
       max_response_tokens: 32768
       vision: true

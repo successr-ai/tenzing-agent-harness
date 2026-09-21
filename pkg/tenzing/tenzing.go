@@ -20,6 +20,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/systemone"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/runner"
 )
@@ -87,6 +88,13 @@ var (
 	// deny→advisor→retry round-trip the harness has no budget for. Ignored
 	// unless WithAdvisorLLM is also set.
 	WithAdvisorExemptTools = harness.WithAdvisorExemptTools
+
+	// WithSystemOne registers a System One decision model (TypeSafe's Jev):
+	// it gates tool calls, judges when the executor should consult its
+	// advisor, and routes the turn's model. Every consumer fails open and
+	// only ever tightens a decision. The second argument resolves a routing
+	// candidate's alias to a client; pass nil when routing is off.
+	WithSystemOne = harness.WithSystemOne
 
 	// WithDisabledTool removes a tool by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
@@ -230,6 +238,20 @@ type PermissionPolicy = permissions.Policy
 // DefaultPermissionPolicy returns the built-in policy: code-executing and
 // file-writing tools escalate to AskUser, everything else is allowed.
 var DefaultPermissionPolicy = permissions.DefaultPolicy
+
+// System One decision-model configuration for WithSystemOne. Client is
+// required; the rest have working defaults, and the thresholds are
+// probabilities read against the questions in the feature package.
+type (
+	SystemOneConfig  = systemone.Config
+	SystemOneGate    = systemone.GateConfig
+	SystemOneAdvisor = systemone.AdvisorConfig
+	SystemOneRouting = systemone.RoutingConfig
+	// SystemOneCandidate is one model the router may choose: its alias and
+	// what it is for, which is what the decision model is told the option
+	// means.
+	SystemOneCandidate = systemone.Candidate
+)
 
 // Budget limits for WithBudgets; zero fields are unlimited.
 type BudgetLimits = budgets.Limits

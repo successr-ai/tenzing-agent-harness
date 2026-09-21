@@ -10,6 +10,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
@@ -37,6 +38,11 @@ const (
 var _ core.Agent = (*Agent)(nil)
 
 type Agent struct {
+	// modelMu guards model, which SetLLM swaps while other goroutines may
+	// be reading it: a driver polling GetCurrentModel over HTTP, and System
+	// One routing, which switches the model from inside the turn's first
+	// iteration rather than between turns.
+	modelMu      sync.RWMutex
 	model        common.LLM
 	systemPrompt string
 
@@ -146,12 +152,22 @@ func sizeOutput(budget *int64, modelMax int64) (*int64, int64) {
 }
 
 func (a *Agent) GetCurrentModel() string {
-	return a.model.GetCurrentModel()
+	return a.llm().GetCurrentModel()
+}
+
+// llm reads the current client. Every use goes through it, so a swap is
+// never observed half-applied.
+func (a *Agent) llm() common.LLM {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.model
 }
 
 // SetLLM swaps the underlying LLM client (mid-session model switching).
-// Only call between turns — DoReasoning must not be in flight.
+// A reasoning call already in flight keeps the client it started with.
 func (a *Agent) SetLLM(llm common.LLM) {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
 	a.model = llm
 }
 
@@ -198,7 +214,7 @@ func (a *Agent) callLLM(ctx context.Context, req common.CompletionRequest, tools
 		if a.streamCallback != nil {
 			resp, err = a.doStreamingReasoning(ctx, req, &streamed)
 		} else {
-			resp, err = a.model.SendMessageWithTools(ctx, req, tools)
+			resp, err = a.llm().SendMessageWithTools(ctx, req, tools)
 		}
 		if err == nil {
 			return resp, nil
@@ -236,7 +252,7 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 	var streamErr error
 	done := make(chan struct{})
 	go func() {
-		streamErr = a.model.SendStreamingMessage(ctx, req, events)
+		streamErr = a.llm().SendStreamingMessage(ctx, req, events)
 		close(done)
 	}()
 
@@ -280,7 +296,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	}
 
 	// create LLM request
-	model := a.model.GetCurrentModel()
+	model := a.llm().GetCurrentModel()
 	req := common.CompletionRequest{
 		Model:          model,
 		System:         system,

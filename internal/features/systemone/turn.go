@@ -23,6 +23,7 @@ func (e *Ext) BeforeIteration(ctx context.Context, tc *core.TurnContext) error {
 		e.advisorArmed = false
 		e.recentTools = nil
 		e.consults = 0
+		e.failures = 0 // a new turn re-arms the failure breaker
 	}
 	e.mu.Unlock()
 

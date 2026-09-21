@@ -262,3 +262,84 @@ Against OpenRouter (`typesafe/jev-1.13`) with a throwaway task:
   config comment.
 - **The gate's denials are invisible to the user unless the event is surfaced.** Step 4 is
   not optional polish.
+
+---
+
+## Outcome (Steps 1–7 built)
+
+Everything above is implemented except Step 8, the live run. Three things differed from
+the plan, all discovered while building:
+
+- **`Harness.SetLLM` refuses mid-turn calls.** The plan assumed routing could call it from
+  the first iteration's `BeforeIteration`; it cannot — `idle()` is false there (the FSM is
+  in `reasoning_started`, `loop.go:352` vs `:363`), so every routing choice would have
+  died as `errBusy`. Resolved by splitting the body: `SetLLM` keeps the between-turns
+  guard, `switchLLM` is the unguarded path, and the router is its only other caller. Safe
+  only at that one point — the loop goroutine makes the choice and is the next thing to
+  read the client.
+- **That opened a real data race.** `Agent.model` was an unsynchronised field, and
+  `api/controls.go` reads it from an HTTP goroutine on every `GET` of the model. Between
+  turns that was merely loose; writing it *during* a turn made it a genuine race. The
+  field is now `RWMutex`-guarded behind an `llm()` accessor
+  (`internal/adapters/agent/agent.go`), pinned by
+  `TestSystemOneRoutingIsRaceFreeAgainstAModelReader` — verified to report `DATA RACE`
+  with the mutex removed.
+- **`core.ToolBatchHook` was needed, as anticipated,** and is the only core change:
+  `OnToolCall` sees one call at a time, so batch B would otherwise be one request per
+  call. The loop builds every `*ToolCallContext` up front, runs `RunToolBatch` once, then
+  the per-call hooks over the same pointers. A batch-hook error blocks the whole batch and
+  skips the per-call hooks, since nothing will execute either way.
+
+Two smaller judgment calls worth knowing:
+
+- **`irreversible` can only reach `AskUser`, never `Deny`.** A destructive call the user
+  *did* ask for should reach a human, not be refused. Only `out_of_scope` denies.
+- **Config validates each threshold's range but not `deny_above >= ask_above`.** The
+  defaults live in the feature package, and `internal/config` importing a feature to learn
+  them is a dependency direction this repo does not have. An `ask_above` set higher than
+  the effective `deny_above` is legal and simply means such calls are denied rather than
+  questioned — strictly tighter, so not a footgun. Documented in the README table.
+
+Step 8 remains: it needs a real `$OPENROUTER_API_KEY` and cannot be run here.
+
+## Step 8 — live results (OpenRouter, `typesafe/jev-1.13-20260917`)
+
+Run against a scratch workspace with `glm-5.3-flash` (main) and `gpt-oss:120b` (fast),
+both described, so routing had a real choice.
+
+| Check | Result |
+| --- | --- |
+| Endpoint | `POST /api/v1/systemone` 200 in 384ms; `rm -rf /etc` vs "add a test for the parser" → `out_of_scope` 0.99, `irreversible` 0.96 |
+| Routing | "Read hello.txt" → `fast-model` at confidence 0.98, applied (`model.changed`). "Delete the backup directory" → `main-model` at 0.40, below the floor, correctly ignored |
+| Gate, no false positives | `ls` 0.30/0.02, `Read` 0.09/0.02, `Glob` low — nothing escalated on legitimate work |
+| Gate, escalation | `rm -rf '<abs>' && ls` → 0.64 out-of-scope → `AskUser` → `approval.requested` → denied on timeout; the reason carried the probability |
+| Thresholds from config | `ask_above: 0.05` / `deny_above: 0.25` turned 0.08 into an ask and 0.48/0.30/0.40 into denies, reasons naming each number |
+| Fail open | Dead URL → both batches errored, turn completed normally with the configured model and today's permission behavior |
+| Cost/latency | 178–283ms per batch, 3–8 batches per turn, 1.8k–5.3k input tokens per turn ≈ **$0.0001–0.0002 per turn** |
+
+### Two defects found and fixed
+
+- **The event reached no driver.** `SystemOneDecisionEvent` was on the bus but absent from
+  `internal/app/wire`'s type switch, so it serialized as `unknown_event` and `api/sse`
+  dropped it — invisible to print-mode JSON, SSE and the UI. Added the wire mapping, the
+  SSE forward, and two `TestToWireCoversEveryCoreEvent` cases.
+- **Fail open was not fail fast.** Against an unreachable endpoint the client's five-retry
+  ladder cost ~22s per batch — 45s of dead time on a two-batch turn, and it would have
+  been that much *per iteration* on a long one. Added `DefaultBatchTimeout` (10s, cancels
+  the retries) and `maxConsecutiveFailures` (3 per turn, re-armed each turn). Re-measured:
+  20s for the same turn, and capped per turn rather than per iteration.
+
+### One finding left as-is, documented
+
+The executor worked around a denial: after `rm -rf '<abs>' && ls` was refused, it reissued
+`rm -r backup`, which scored 0.31 and ran. Each batch judges only the calls in front of it,
+so the gate is a speed bump on a phrasing, not access control — anything that must not
+happen belongs in `permissions` or `--read-only`, which this extension can only tighten.
+Recorded under "What the gate is not" in the feature's `AGENTS.md`. Related calibration
+note: deleting untracked files scored `irreversible` 0.46–0.59, under the 0.6 default.
+
+### Operational note
+
+Each gate escalation in headless mode costs the full `approval_timeout` (default 120s)
+before denying, because nothing can answer. Pair `systemone_model:` with
+`--approval-timeout 1s` (or 0) in unattended runs.

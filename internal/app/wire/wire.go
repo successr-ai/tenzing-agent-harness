@@ -192,6 +192,27 @@ type thinkingChanged struct {
 
 // imagesAttached deliberately reports only count + media types — the event's
 // base64 payloads would bloat every consumer's stream.
+// systemOneDecision reports one System One batch. Decisions carry the
+// action taken, not just the answer, so a surprising block can be traced to
+// the threshold that produced it. Errors are reported too: a batch that
+// failed changed nothing, which is worth seeing.
+type systemOneDecision struct {
+	Batch       string                 `json:"batch"`
+	Model       string                 `json:"model,omitempty"`
+	DurationMS  int64                  `json:"duration_ms"`
+	InputTokens int64                  `json:"input_tokens,omitempty"`
+	Decisions   []systemOneOneDecision `json:"decisions,omitempty"`
+	Error       string                 `json:"error,omitempty"`
+}
+
+type systemOneOneDecision struct {
+	Question   string  `json:"question"`
+	Answer     string  `json:"answer"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Action     string  `json:"action"`
+	Target     string  `json:"target,omitempty"`
+}
+
 type imagesAttached struct {
 	Count      int      `json:"count"`
 	MediaTypes []string `json:"media_types"`
@@ -316,6 +337,26 @@ func ToWire(ev core.Event) Envelope {
 	case core.ThinkingChangedEvent:
 		setBase(e.BaseEvent)
 		env.Data = thinkingChanged{Enabled: e.Enabled}
+	case core.SystemOneDecisionEvent:
+		setBase(e.BaseEvent)
+		decisions := make([]systemOneOneDecision, len(e.Decisions))
+		for i, d := range e.Decisions {
+			decisions[i] = systemOneOneDecision{
+				Question:   d.Question,
+				Answer:     d.Answer,
+				Confidence: d.Confidence,
+				Action:     d.Action,
+				Target:     d.Target,
+			}
+		}
+		env.Data = systemOneDecision{
+			Batch:       e.Batch,
+			Model:       e.Model,
+			DurationMS:  e.Duration.Milliseconds(),
+			InputTokens: e.InputTokens,
+			Decisions:   decisions,
+			Error:       e.Error,
+		}
 	case core.ImagesAttachedEvent:
 		setBase(e.BaseEvent)
 		types := make([]string, len(e.Images))

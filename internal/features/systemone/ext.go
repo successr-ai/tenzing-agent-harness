@@ -60,6 +60,25 @@ type RoutingConfig struct {
 	MinConfidence float64
 }
 
+// DefaultBatchTimeout bounds one batch. Fail-open is only useful if it is
+// also fail-fast: the protocol client retries transient failures five times
+// with backoff, which measured ~22s per batch against an unreachable
+// endpoint — two batches an iteration, so a dead endpoint would stall every
+// iteration by the better part of a minute. The deadline cancels the retry
+// ladder instead.
+const DefaultBatchTimeout = 10 * time.Second
+
+// maxConsecutiveFailures stops paying that price over and over. After this
+// many failed batches in a row the extension stops calling for the rest of
+// the turn; the next turn tries again, so a blip costs a turn's tail and an
+// outage costs this many timeouts per turn rather than two per iteration.
+const maxConsecutiveFailures = 3
+
+// DefaultRecentMessages is the message tail a caller should use when it has
+// no explicit setting. It is not applied by New: 0 means "send none", a real
+// choice, so only a caller that can tell "unset" from "zero" can default it.
+const DefaultRecentMessages = 4
+
 // Config configures Ext. Client is required; everything else has a working
 // default.
 type Config struct {
@@ -68,9 +87,12 @@ type Config struct {
 	// every state. Accuracy falls as the state fills with detail the decision
 	// does not need, and this content leaves the machine — 0 sends none.
 	RecentMessages int
-	Gate           GateConfig
-	Advisor        AdvisorConfig
-	Routing        RoutingConfig
+	// Timeout bounds one batch, including the client's retries. 0 =
+	// DefaultBatchTimeout; negative disables the deadline.
+	Timeout time.Duration
+	Gate    GateConfig
+	Advisor AdvisorConfig
+	Routing RoutingConfig
 }
 
 // Ext is the extension. Its dependencies beyond the client are late-bound by
@@ -80,6 +102,7 @@ type Config struct {
 type Ext struct {
 	client  common.SystemOne
 	recentN int
+	timeout time.Duration
 	gate    GateConfig
 	advisor AdvisorConfig
 	routing RoutingConfig
@@ -91,6 +114,7 @@ type Ext struct {
 	classify     func(name string) bool // true = read-only
 	runnerID     string
 	advisorArmed bool     // a consult was judged due and has not happened yet
+	failures     int      // consecutive failed batches; resets on success and each turn
 	consults     int      // advisor calls issued this turn
 	recentTools  []string // tool names issued this turn, oldest first
 }
@@ -101,9 +125,14 @@ func New(cfg Config) *Ext {
 	if cfg.Client == nil {
 		return nil
 	}
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = DefaultBatchTimeout
+	}
 	return &Ext{
 		client:  cfg.Client,
 		recentN: cfg.RecentMessages,
+		timeout: timeout,
 		gate:    withGateDefaults(cfg.Gate),
 		advisor: withAdvisorDefaults(cfg.Advisor),
 		routing: withRoutingDefaults(cfg.Routing),
@@ -173,9 +202,18 @@ func (e *Ext) routingEnabled() bool { return len(e.routing.Candidates) >= 2 }
 // reported as (zero response, false) — never an error — because every caller
 // falls back rather than propagating.
 func (e *Ext) evaluate(ctx context.Context, batch string, req common.EvaluationRequest) (common.EvaluationResponse, bool) {
+	if e.tripped() {
+		return common.EvaluationResponse{}, false
+	}
+	if e.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.timeout)
+		defer cancel()
+	}
 	start := time.Now()
 	resp, err := e.client.Evaluate(ctx, req)
 	if err != nil {
+		e.recordFailure()
 		slog.Warn("system one batch failed; falling back",
 			"ext", e.Name(), "batch", batch, "error", err)
 		e.emit(core.SystemOneDecisionEvent{
@@ -186,7 +224,30 @@ func (e *Ext) evaluate(ctx context.Context, batch string, req common.EvaluationR
 		})
 		return common.EvaluationResponse{}, false
 	}
+	e.mu.Lock()
+	e.failures = 0
+	e.mu.Unlock()
 	return resp, true
+}
+
+// tripped reports whether this turn has already paid for enough failures.
+func (e *Ext) tripped() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.failures >= maxConsecutiveFailures
+}
+
+// recordFailure counts a failed batch and logs the moment the breaker opens,
+// so a silent decision model is visible once rather than every batch.
+func (e *Ext) recordFailure() {
+	e.mu.Lock()
+	e.failures++
+	tripped := e.failures == maxConsecutiveFailures
+	e.mu.Unlock()
+	if tripped {
+		slog.Warn("system one unreachable; no more batches this turn",
+			"ext", e.Name(), "failures", maxConsecutiveFailures)
+	}
 }
 
 // report emits the outcome of a successful batch.

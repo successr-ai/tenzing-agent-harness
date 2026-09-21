@@ -41,6 +41,14 @@ type File struct {
 	// AdvisorMaxCalls caps advisor consults per turn; 0 = default (30).
 	AdvisorMaxCalls int `yaml:"advisor_max_calls"`
 
+	// SystemOneModel names a models.systemone: entry and turns on the
+	// decision-model consumers in internal/features/systemone. Unlike the
+	// refs above it is an alias only — a System One model is declared, not
+	// written inline. SystemOne tunes those consumers and does nothing
+	// without it.
+	SystemOneModel string            `yaml:"systemone_model"`
+	SystemOne      *SystemOneSection `yaml:"systemone"`
+
 	// MaxTurnTokens bounds input+output cumulatively for one turn; a
 	// model entry's MaxResponseTokens bounds a single response instead.
 	MaxTurnTokens int64     `yaml:"max_turn_tokens"`
@@ -143,6 +151,56 @@ func strictDecodeNode(node *yaml.Node, out any) error {
 	return nil
 }
 
+// SystemOneSection is tenzing.yaml's systemone: block — the tuning for the
+// decision model named by systemone_model:. Every field is optional and
+// every sub-setting is a pointer, so "omitted" is distinguishable from "set
+// to zero" and the feature's own defaults apply to whatever is left out.
+//
+// Defaults when the block is absent: the tool gate and the advisor-need
+// judgment run; routing runs only when two or more models.llm: entries carry
+// a description:, since fewer than two is not a choice.
+type SystemOneSection struct {
+	// RecentMessages is how many trailing conversation messages ride along
+	// in every question's state. This content leaves the machine and
+	// accuracy falls as the state fills with detail the decision does not
+	// need, so it is small by default and 0 sends none.
+	RecentMessages *int `yaml:"recent_messages"`
+
+	Gate    SystemOneGate    `yaml:"gate"`
+	Advisor SystemOneAdvisor `yaml:"advisor"`
+	Routing SystemOneRouting `yaml:"routing"`
+}
+
+// SystemOneGate tunes tool gating. The thresholds are probabilities the
+// model's answers are read against; each is validated here for range only,
+// because the defaults they combine with live with the question wording they
+// were calibrated for (internal/features/systemone). Setting ask_above above
+// the effective deny_above is legal and simply means calls are denied rather
+// than questioned.
+type SystemOneGate struct {
+	Enabled *bool `yaml:"enabled"`
+	// AskAbove escalates a call to an approval prompt; DenyAbove refuses it
+	// outright.
+	AskAbove  *float64 `yaml:"ask_above"`
+	DenyAbove *float64 `yaml:"deny_above"`
+}
+
+// SystemOneAdvisor tunes the advisor-need judgment. Turn it off where the
+// advisor tool is not mounted — there would be nothing to consult.
+type SystemOneAdvisor struct {
+	Enabled      *bool    `yaml:"enabled"`
+	ConsultAbove *float64 `yaml:"consult_above"`
+}
+
+// SystemOneRouting tunes model routing: which models.llm: entry serves the
+// turn. Candidates are the entries carrying a description:, which becomes
+// what the model is told the option is for. MinConfidence is the floor below
+// which a choice is ignored and the configured model keeps serving.
+type SystemOneRouting struct {
+	Enabled       *bool    `yaml:"enabled"`
+	MinConfidence *float64 `yaml:"min_confidence"`
+}
+
 // PermissionsSection overrides the default permission policy. A tool named
 // in one list is removed from the other two, so `allow: [Write, Edit]` is
 // enough to stop those prompts while bash and MCP tools keep asking. Names
@@ -233,6 +291,12 @@ type ModelEntry struct {
 	// top-level MaxTurnTokens bounds a whole turn instead.
 	MaxResponseTokens int        `yaml:"max_response_tokens"`
 	Cost              *CostEntry `yaml:"cost"`
+	// Description says what this model is for, in a sentence or two. It is
+	// documentation with one consumer: a model carrying one becomes a
+	// candidate for System One routing (systemone_model:), and the text is
+	// what the decision model is told the option means. Omit it to keep a
+	// model out of routing.
+	Description string `yaml:"description"`
 	// Vision marks the model as accepting image input; image-bearing
 	// queries are rejected on models without it.
 	Vision bool `yaml:"vision"`
@@ -434,6 +498,10 @@ func (f File) validate() error {
 		models[e.Name] = true
 	}
 
+	if err := f.validateSystemOne(systemOneAliases(f.Models.SystemOne), models); err != nil {
+		return err
+	}
+
 	if f.AdvisorNudge < 0 {
 		return fmt.Errorf("advisor_nudge must be >= 0, got %d", f.AdvisorNudge)
 	}
@@ -444,4 +512,74 @@ func (f File) validate() error {
 		return fmt.Errorf("advisor_max_calls must be >= 0, got %d", f.AdvisorMaxCalls)
 	}
 	return nil
+}
+
+// systemOneAliases collects the decision-model aliases a systemone_model:
+// ref may name.
+func systemOneAliases(entries []SystemOneEntry) map[string]bool {
+	out := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		out[e.Name] = true
+	}
+	return out
+}
+
+// validateSystemOne checks the systemone_model: ref and the systemone:
+// block. declared is every alias in the file, so naming a chat model can be
+// reported as the wrong kind rather than as a missing one.
+func (f File) validateSystemOne(systemOnes, declared map[string]bool) error {
+	if f.SystemOne != nil && f.SystemOneModel == "" {
+		return fmt.Errorf("systemone: has no effect without systemone_model:; name a models.systemone: entry or drop the block")
+	}
+	if f.SystemOneModel == "" {
+		return nil
+	}
+	switch {
+	case systemOnes[f.SystemOneModel]:
+	case declared[f.SystemOneModel]:
+		return fmt.Errorf("systemone_model %q is a chat model; it must name a models.systemone: entry", f.SystemOneModel)
+	default:
+		return fmt.Errorf("systemone_model %q is not declared under models.systemone:", f.SystemOneModel)
+	}
+	if f.SystemOne == nil {
+		return nil
+	}
+
+	if n := f.SystemOne.RecentMessages; n != nil && *n < 0 {
+		return fmt.Errorf("systemone.recent_messages must be >= 0, got %d", *n)
+	}
+	thresholds := []struct {
+		key   string
+		value *float64
+	}{
+		{"systemone.gate.ask_above", f.SystemOne.Gate.AskAbove},
+		{"systemone.gate.deny_above", f.SystemOne.Gate.DenyAbove},
+		{"systemone.advisor.consult_above", f.SystemOne.Advisor.ConsultAbove},
+		{"systemone.routing.min_confidence", f.SystemOne.Routing.MinConfidence},
+	}
+	for _, t := range thresholds {
+		if t.value != nil && (*t.value < 0 || *t.value > 1) {
+			return fmt.Errorf("%s must be between 0 and 1, got %v", t.key, *t.value)
+		}
+	}
+
+	// Routing asked for explicitly must have something to choose between.
+	// Left unset it enables itself when the descriptions are there, so only
+	// the explicit case can be wrong.
+	if r := f.SystemOne.Routing.Enabled; r != nil && *r && f.describedModels() < 2 {
+		return fmt.Errorf("systemone.routing.enabled needs at least two models.llm: entries with a description:, found %d",
+			f.describedModels())
+	}
+	return nil
+}
+
+// describedModels counts the chat models eligible for routing.
+func (f File) describedModels() int {
+	n := 0
+	for _, e := range f.Models.LLM {
+		if strings.TrimSpace(e.Description) != "" {
+			n++
+		}
+	}
+	return n
 }

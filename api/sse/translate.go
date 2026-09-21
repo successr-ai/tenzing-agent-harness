@@ -34,7 +34,7 @@ func Translate(ev core.Event, subagents map[string]string) (event string, payloa
 		core.LLMResponseEvent, core.ToolProgressEvent,
 		core.SteeringInjectedEvent, core.LLMRetryEvent,
 		core.ModelChangedEvent, core.ThinkingChangedEvent,
-		core.ImagesAttachedEvent,
+		core.ImagesAttachedEvent, core.SystemOneDecisionEvent,
 		nexus.ChannelErrorEvent, nexus.ChannelStatusEvent, nexus.TriggerEvent:
 		// forwarded without an agent label
 	default:

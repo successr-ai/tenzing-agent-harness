@@ -9,6 +9,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/systemone"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
@@ -55,6 +56,16 @@ type harnessOptions struct {
 	// advisorExemptTools names tools the advisor write-gate never blocks,
 	// even unconsulted. Only meaningful when advisorLLM is set.
 	advisorExemptTools []string
+
+	// systemOne, when non-nil and carrying a client, registers the decision
+	// model extension: tool gating, advisor-need judgment, model routing.
+	systemOne *systemone.Config
+
+	// resolveModel turns a model alias into a client, so a routing choice
+	// can be applied. Nil leaves routing decided but never applied — the
+	// harness cannot resolve aliases itself, that is the app layer's
+	// registry.
+	resolveModel func(alias string) (common.LLM, error)
 
 	// onTextDelta is called with incremental text output from the agent,
 	// tagged with the emitting runner's id. It is called from the agent's
@@ -512,4 +523,22 @@ func WithCompressionKeepMessages(n int) HarnessOption {
 // permission policy. Repeat the option per server.
 func WithMCPServer(cfg mcp.ServerConfig) HarnessOption {
 	return func(o *harnessOptions) { o.mcpServers = append(o.mcpServers, cfg) }
+}
+
+// WithSystemOne registers the System One decision model extension: it gates
+// tool calls, judges when the executor should consult its advisor, and routes
+// the turn's model. cfg.Client is required — a nil one registers nothing, so
+// a caller with no decision model configured can pass the zero value.
+//
+// resolveModel turns one of cfg.Routing.Candidates into a client. Pass nil
+// when routing is off or cannot be applied; the choice is then judged and
+// logged but never acted on.
+//
+// The extension registers after permissions and the advisor gate, so it sees
+// their decisions and can only tighten them.
+func WithSystemOne(cfg systemone.Config, resolveModel func(alias string) (common.LLM, error)) HarnessOption {
+	return func(o *harnessOptions) {
+		o.systemOne = &cfg
+		o.resolveModel = resolveModel
+	}
 }

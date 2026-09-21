@@ -24,6 +24,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/prompts"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/reminders"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/skills"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/systemone"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/todo"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/prompttmpl"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/runner"
@@ -203,6 +204,16 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 			ExemptTools:     o.advisorExemptTools,
 		})
 		defaultExts = append(defaultExts, advisorGate)
+	}
+	// The decision model runs last among the gating extensions, so its
+	// questions see every earlier decision and can only tighten them. Its
+	// four dependencies are late-bound below, for the same reason the
+	// advisor gate's classifier is.
+	var soExt *systemone.Ext
+	if o.systemOne != nil {
+		if soExt = systemone.New(*o.systemOne); soExt != nil {
+			defaultExts = append(defaultExts, soExt)
+		}
 	}
 	defaultExts = append(defaultExts,
 		reminders.New(todoFile.FormatReminder),
@@ -393,6 +404,11 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	if advisorGate != nil {
 		advisorGate.SetClassifier(composite.ReadOnly)
 	}
+	if soExt != nil {
+		soExt.SetClassifier(composite.ReadOnly)
+		soExt.SetEmitter(o.eventBus)
+		soExt.SetMessages(mainStore.Messages)
+	}
 
 	// create agent runner
 	runnerOpts := []runner.AgentRunnerOption{
@@ -429,7 +445,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		return nil, fmt.Errorf("session start hooks: %w", err)
 	}
 
-	return &Harness{
+	h := &Harness{
 		mainAgentRunner: mainAgentRunner,
 		toolPort:        composite,
 		todoFile:        todoFile,
@@ -448,7 +464,23 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		promptTemplates: promptTemplates,
 		skills:          skillsRegistry,
 		context:         ctx,
-	}, nil
+	}
+
+	// Routing applies its choice through the same path a driver's /model
+	// command takes, minus the between-turns guard: the router runs on the
+	// loop goroutine at the start of iteration 1, where no turn-in-flight
+	// check can pass and nothing else is touching the agent.
+	if soExt != nil && o.resolveModel != nil {
+		soExt.SetRouter(func(_ context.Context, alias string) error {
+			llm, err := o.resolveModel(alias)
+			if err != nil {
+				return fmt.Errorf("resolve routed model %q: %w", alias, err)
+			}
+			return h.switchLLM(llm)
+		})
+	}
+
+	return h, nil
 }
 
 // errBusy is returned by between-turns operations invoked mid-turn.
@@ -475,10 +507,25 @@ func (h *Harness) Compact(ctx context.Context, instructions string) error {
 // SetLLM switches the main agent to a different LLM client between turns.
 // The caller owns client construction (and any reuse/caching). Subagent and
 // blackboard roles keep their clients.
+//
+// Mid-turn callers are refused. The one exception is System One routing,
+// which reaches switchLLM directly — see there.
 func (h *Harness) SetLLM(llm common.LLM) error {
 	if !h.idle() {
 		return errBusy
 	}
+	return h.switchLLM(llm)
+}
+
+// switchLLM is SetLLM without the between-turns guard. Its only other caller
+// is the System One router, which runs inside a turn by design: the choice is
+// made in the first iteration's BeforeIteration hook, on the loop goroutine,
+// after the FSM has left the idle states and before the turn's first
+// DoReasoning. That is the one moment a mid-turn swap is safe — the loop
+// goroutine is the only thing reading the agent's client, and it reads it
+// next, on the line after the hooks return. Do not call this from anywhere
+// else; use SetLLM.
+func (h *Harness) switchLLM(llm common.LLM) error {
 	if llm == nil {
 		return fmt.Errorf("LLM is required")
 	}

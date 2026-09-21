@@ -1,5 +1,11 @@
 # System One models in `tenzing.yaml` — `models:` splits into `llm:` and `systemone:`
 
+> **Follow-up:** this plan deliberately stopped at "a client can be built". The consumer
+> side — `systemone_model:`, the `systemone:` block, and the three harness decisions that
+> use them — is `../2026-09-20-systemone-harness/PLAN.md`, which is built. The decisions
+> below stand as the record of *this* change's scope; read the follow-up for what the
+> harness does with a System One client today.
+
 ## Context
 
 `pkg/providers/protocols/systemone` now implements `common.SystemOne`, the decision

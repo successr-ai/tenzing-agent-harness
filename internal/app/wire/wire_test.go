@@ -78,6 +78,11 @@ func TestToWireCoversEveryCoreEvent(t *testing.T) {
 			pre + `task.created` + mid + `,"data":{"task_id":"t1","description":"d"}}`},
 		{"task completed", core.TaskCompletedEvent{BaseEvent: base(core.EventTaskCompleted), TaskID: "t1"},
 			pre + `task.completed` + mid + `,"data":{"task_id":"t1"}}`},
+		{"systemone decision", core.SystemOneDecisionEvent{BaseEvent: base(core.EventSystemOneDecision), Batch: "tools", Model: "jev-1.13.0", Duration: 380 * time.Millisecond, InputTokens: 355,
+			Decisions: []core.SystemOneDecision{{Question: "c1#out_of_scope", Answer: "0.99", Action: "deny", Target: "bash"}}},
+			pre + `systemone.decision` + mid + `,"data":{"batch":"tools","model":"jev-1.13.0","duration_ms":380,"input_tokens":355,"decisions":[{"question":"c1#out_of_scope","answer":"0.99","action":"deny","target":"bash"}]}}`},
+		{"systemone decision that failed", core.SystemOneDecisionEvent{BaseEvent: base(core.EventSystemOneDecision), Batch: "turn", Duration: 20 * time.Millisecond, Error: "endpoint unreachable"},
+			pre + `systemone.decision` + mid + `,"data":{"batch":"turn","duration_ms":20,"error":"endpoint unreachable"}}`},
 		{"approval requested drops Respond", core.ApprovalRequestedEvent{BaseEvent: base(core.EventApprovalRequested), CallID: "c1", ToolName: "bash", Input: "rm", Reason: "danger", Timeout: 2 * time.Minute, Respond: func(bool) {}},
 			pre + `approval.requested` + mid + `,"data":{"call_id":"c1","tool_name":"bash","input":"rm","reason":"danger","timeout_ms":120000}}`},
 	}

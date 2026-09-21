@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
+	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/budgets"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/systemone"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness"
 	"github.com/successr-ai/tenzing-agent-harness/internal/harness/session"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
@@ -32,6 +34,14 @@ type cliConfig struct {
 	AdvisorNudge    int
 	AdvisorCadence  int // 0 = default (6), -1 = off
 	AdvisorMaxCalls int // 0 = default (30)
+	// SystemOneModel names a models.systemone: entry (alias only) and turns
+	// on the decision-model consumers. SystemOne tunes them and comes from
+	// the file alone; RoutingCandidates are the models.llm: entries
+	// carrying a description:, collected at merge time because the registry
+	// does not keep the text.
+	SystemOneModel    string
+	SystemOne         *cfgfile.SystemOneSection
+	RoutingCandidates []systemone.Candidate
 
 	// budgets
 	MaxTurnTokens int64
@@ -161,6 +171,14 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	advisorInt("--advisor-nudge", cfg.AdvisorNudge, harness.WithAdvisorNudge)
 	advisorInt("--advisor-cadence", cfg.AdvisorCadence, harness.WithAdvisorCadence)
 	advisorInt("--advisor-max-calls", cfg.AdvisorMaxCalls, harness.WithAdvisorMaxCalls)
+
+	soOpt, err := systemOneOption(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if soOpt != nil {
+		opts = append(opts, soOpt)
+	}
 
 	if cfg.MaxTurnTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {
 		opts = append(opts, harness.WithBudgets(budgets.Limits{

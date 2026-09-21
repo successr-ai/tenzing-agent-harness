@@ -109,6 +109,7 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	setStr("subagent-model", &cfg.SubagentModel, f.SubagentModel)
 	setStr("blackboard-model", &cfg.BlackboardModel, f.BlackboardModel)
 	setStr("advisor-model", &cfg.AdvisorModel, f.AdvisorModel)
+	setStr("systemone-model", &cfg.SystemOneModel, f.SystemOneModel)
 	setStr("system", &cfg.SystemFile, f.SystemFile)
 
 	if f.AdvisorNudge != 0 && !changed("advisor-nudge") {
@@ -186,6 +187,14 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 			cfg.ConnectEphemeralGrants = *f.Connect.EphemeralGrants
 		}
 	}
+
+	// The systemone: block has no flags — it comes from the file or not at
+	// all. Routing candidates are read here too: the registry keeps no
+	// description text.
+	if f.SystemOne != nil {
+		cfg.SystemOne = f.SystemOne
+	}
+	cfg.RoutingCandidates = routingCandidates(f.Models.LLM)
 
 	if f.Permissions != nil {
 		policy := permissionPolicy(*f.Permissions)

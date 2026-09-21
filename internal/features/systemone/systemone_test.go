@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
@@ -241,5 +243,96 @@ func TestNoQuestionsMeansNoRequest(t *testing.T) {
 func TestNewWithoutClientIsNil(t *testing.T) {
 	if ext := New(Config{}); ext != nil {
 		t.Fatal("no client means no extension")
+	}
+}
+
+// slowJudge blocks until its context is done, standing in for the retry
+// ladder the protocol client runs against an unreachable endpoint.
+type slowJudge struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *slowJudge) Evaluate(ctx context.Context, _ common.EvaluationRequest) (common.EvaluationResponse, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	<-ctx.Done()
+	return common.EvaluationResponse{}, ctx.Err()
+}
+
+func (s *slowJudge) GetCurrentModel() string { return "slow" }
+
+func (s *slowJudge) seen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// A batch must not outlive its deadline: fail-open is only useful if it is
+// also fail-fast.
+func TestBatchTimeoutBoundsAFailingJudge(t *testing.T) {
+	j := &slowJudge{}
+	ext := New(Config{Client: j, Advisor: AdvisorConfig{Disabled: true}, Timeout: 20 * time.Millisecond})
+	tcc := call("c1", "write")
+
+	start := time.Now()
+	if err := ext.OnToolBatch(context.Background(), []*core.ToolCallContext{tcc}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("batch took %s; the deadline must cancel it", elapsed)
+	}
+	if tcc.Decision != core.Allow {
+		t.Fatalf("a timed-out batch must change nothing, got %v", tcc.Decision)
+	}
+}
+
+// After enough consecutive failures the extension stops calling for the rest
+// of the turn, and the next turn re-arms it.
+func TestFailureBreakerStopsCallingAndReArmsNextTurn(t *testing.T) {
+	j := &fakeJudge{err: errors.New("unreachable")}
+	ext := New(Config{Client: j, Advisor: AdvisorConfig{Disabled: true}})
+
+	for i := 0; i < maxConsecutiveFailures+3; i++ {
+		if err := ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")}); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	}
+	if len(j.reqs) != maxConsecutiveFailures {
+		t.Fatalf("attempts = %d, want the breaker to stop at %d", len(j.reqs), maxConsecutiveFailures)
+	}
+
+	// A new turn tries again.
+	if err := ext.BeforeIteration(context.Background(), &core.TurnContext{Iteration: 1}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if err := ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(j.reqs) != maxConsecutiveFailures+1 {
+		t.Fatalf("attempts = %d, want one more after the turn boundary", len(j.reqs))
+	}
+}
+
+// A success clears the count, so intermittent blips never trip the breaker.
+func TestBreakerResetsOnSuccess(t *testing.T) {
+	j := &fakeJudge{err: errors.New("blip")}
+	ext := New(Config{Client: j, Advisor: AdvisorConfig{Disabled: true}})
+	for i := 0; i < maxConsecutiveFailures-1; i++ {
+		_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")})
+	}
+	j.err = nil
+	j.answers = map[string]common.Answer{}
+	_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")})
+
+	j.err = errors.New("blip")
+	for i := 0; i < maxConsecutiveFailures-1; i++ {
+		_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")})
+	}
+	before := len(j.reqs)
+	_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")})
+	if len(j.reqs) != before+1 {
+		t.Fatal("a success must clear the failure count")
 	}
 }
