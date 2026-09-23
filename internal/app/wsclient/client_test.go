@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/rand"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -325,5 +326,66 @@ func TestEventAndResultShapes(t *testing.T) {
 	b, _ = json.Marshal(Hello{Type: "hello"})
 	if strings.Contains(string(b), "conversation_id") {
 		t.Errorf("empty conversation_id must be omitted, got %s", b)
+	}
+}
+
+// TestLargeQueryArrivesIntact: a query carries the node's directive plus
+// upstream context, which outgrows the websocket library's 32 KiB default
+// read limit; the frame must reach the turn whole, not drop the socket.
+func TestLargeQueryArrivesIntact(t *testing.T) {
+	big := strings.Repeat("x", 40_000)
+	p := newPlaneDouble(t).withScript(func(pc *planeConn) {
+		pc.send(Query{Type: "query", ID: "q1", Query: big})
+		var r map[string]any
+		pc.read(testT(t), &r)
+	})
+	var mu sync.Mutex
+	got := -1
+	h, _ := handlersFor(t)
+	h.RunTurn = func(ctx context.Context, cmd *Query) TurnReport {
+		mu.Lock()
+		got = len(cmd.Query)
+		mu.Unlock()
+		return TurnReport{Answer: "ok"}
+	}
+	c := newTestClient(t, p, h, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runClient(ctx, c)
+
+	waitFor(t, "large query ran", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got == len(big)
+	})
+}
+
+// TestUnexpectedAgentRefusalIsFatal: a plane that answers welcome and then
+// `error{code:"unexpected_agent"}` has no launch waiting for this process
+// — typically it restarted since spawning it — and never will. Redialling
+// is futile, so Run returns a FatalError and the process exits instead of
+// retrying for the rest of its life.
+func TestUnexpectedAgentRefusalIsFatal(t *testing.T) {
+	p := newPlaneDouble(t).withScript(func(pc *planeConn) {
+		pc.send(Error{Type: "error", Code: "unexpected_agent", Detail: "no launch in flight for this node"})
+	})
+	h, _ := handlersFor(t)
+	c := newTestClient(t, p, h, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	select {
+	case err := <-runClient(ctx, c):
+		var fatal *FatalError
+		if !errAs(err, &fatal) {
+			t.Fatalf("Run = %v, want a FatalError", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run still redialling a plane that refused this agent")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.connections != 1 {
+		t.Errorf("connections = %d, want 1: a refusal must not be retried", p.connections)
 	}
 }

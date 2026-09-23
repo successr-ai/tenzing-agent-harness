@@ -15,6 +15,9 @@ import (
 	"github.com/coder/websocket"
 )
 
+// maxFrameBytes caps one inbound frame from the plane.
+const maxFrameBytes = 64 << 20
+
 // FatalError is a startup-shaped failure: the process must exit non-zero
 // instead of retrying (config errors, protocol handshake failures that
 // persist). Everything else is transient.
@@ -342,6 +345,10 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial control plane: %w", err)
 	}
+	// A query carries the node's directive plus upstream context, which
+	// outgrows the library's 32 KiB default read limit; past it the library
+	// closes the socket and the turn is lost. A guard, not a budget.
+	conn.SetReadLimit(maxFrameBytes)
 	// Normal closure on our own teardown; the deferred close below only
 	// fires if the pumps have not already closed the connection.
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
@@ -441,6 +448,15 @@ func (c *Client) readPump(connCtx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		msg, err := decode(data)
+		if e, ok := msg.(*Error); ok && e.Code == "unexpected_agent" {
+			// The plane has no launch waiting for this process — it
+			// restarted since spawning it, or the node moved on — and
+			// never will: a redial gets the same answer. Exiting is the
+			// only way this process stops.
+			c.cancelInFlight()
+			conn.Close(websocket.StatusNormalClosure, "refused")
+			return &FatalError{Err: fmt.Errorf("control plane refused this agent: %s", e.Detail)}
+		}
 		if err != nil {
 			var unk *UnknownMessageError
 			if asUnknown(err, &unk) {
@@ -492,6 +508,9 @@ func (c *Client) dispatch(ctx context.Context, msg any) {
 		}
 	case *Shutdown:
 		c.shutdown(*m)
+	case *Error:
+		// Any other plane error is advisory; the connection carries on.
+		slog.Warn("wsclient: control plane error", "code", m.Code, "detail", m.Detail)
 	}
 }
 

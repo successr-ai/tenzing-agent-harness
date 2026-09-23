@@ -7,7 +7,9 @@ document wins and the code is corrected.
 
 Conventions: one WebSocket connection per agent process. All messages are JSON
 objects on text frames. Messages are small (one frame, no fragmentation reliance);
-event payloads may be large but never stream across frames. The connection carries
+event payloads may be large but never stream across frames. Both ends raise the
+websocket read limit to 64 MiB: a tool result carries the file it read, and a query
+carries upstream context, so the library's 32 KiB default closes the socket in normal use. The connection carries
 commands (control plane → agent) and messages (agent → control plane) multiplexed;
 commands carry a correlation `id` echoed by the agent's responses to that command.
 
@@ -43,7 +45,7 @@ After `welcome`, the agent is registered; the plane MAY send commands at any tim
 
 | Type | Fields | When |
 |------|--------|------|
-| `event` | `{turn_id, envelope}` | Every harness event of the running turn. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). |
+| `event` | `{turn_id, envelope}` | Every harness event of the running turn. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). Includes `thinking_delta` (`data.text`: one streamed chunk of reasoning); `text_delta` is not sent — answer text arrives in `llm.response`. |
 | `approval_request` | `{turn_id, id, tool, input}` | A mutating tool call needs approval. The turn blocks until `approve` or cancellation/timeout. |
 | `result` | `{turn_id, id, outcome, answer?, error?, denied_tools, files_touched?}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
 | `shutdown_ack` | `{id}` | Reply to `shutdown`, after the running turn's `result` (if any). The agent closes the connection normally and exits 0 right after. |
@@ -87,6 +89,10 @@ plane's responsibility.
 - **Reconnect**: jittered exponential backoff (base 1s, factor 2, cap 30s, full
   jitter), forever, until the process is killed. On success the agent re-hellos
   (including `last_turn` when applicable) and is immediately idle.
+- **Refusal ends the process**: a plane with no launch waiting for this agent answers
+  the handshake with `welcome` and then `error{code:"unexpected_agent"}` and closes.
+  That answer never changes (typically the plane restarted since spawning the agent),
+  so the agent treats it as fatal and exits non-zero rather than reconnecting.
 - **Startup errors are fatal**: config load failure, unknown model, unreachable
   protocol handshake after the first successful dial — the process exits non-zero so
   the plane can distinguish "bad config, don't restart" from "plane unreachable,

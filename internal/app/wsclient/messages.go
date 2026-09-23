@@ -167,7 +167,8 @@ type Result struct {
 	FilesTouched []string `json:"files_touched,omitempty"`
 }
 
-// Error is a command-level error reply (e.g. bad set-model ref).
+// Error is an error message: a command-level reply (e.g. bad set-model
+// ref) or a connection-level refusal (code "unexpected_agent").
 type Error struct {
 	Type   string `json:"type"` // "error"
 	ID     string `json:"id,omitempty"`
@@ -185,6 +186,12 @@ func decode(raw []byte) (any, error) {
 		return nil, err
 	}
 	switch probe.Type {
+	case "error":
+		var m Error
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return &m, nil
 	case "query":
 		var m Query
 		if err := json.Unmarshal(raw, &m); err != nil {

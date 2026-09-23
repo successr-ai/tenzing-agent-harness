@@ -22,8 +22,10 @@ import (
 // requests it saw, so a resumed run can prove the prior history came back.
 type scriptedLLM struct {
 	answer string
-	mu     sync.Mutex
-	reqs   []common.CompletionRequest
+	// thinking, when set, streams as reasoning ahead of the answer.
+	thinking string
+	mu       sync.Mutex
+	reqs     []common.CompletionRequest
 }
 
 func (s *scriptedLLM) record(req common.CompletionRequest) {
@@ -53,6 +55,9 @@ func (s *scriptedLLM) SendSyncMessage(_ context.Context, req common.CompletionRe
 func (s *scriptedLLM) SendStreamingMessage(_ context.Context, req common.CompletionRequest, events chan<- common.StreamEvent) error {
 	s.record(req)
 	resp := s.response()
+	if s.thinking != "" {
+		events <- common.StreamEvent{Type: common.StreamEventThinking, Text: s.thinking}
+	}
 	events <- common.StreamEvent{Type: common.StreamEventDelta, Text: s.answer}
 	events <- common.StreamEvent{Type: common.StreamEventStop, Response: &resp}
 	close(events)
@@ -255,5 +260,65 @@ func TestConnectResumeEndToEnd(t *testing.T) {
 		if !strings.Contains(hist, want) {
 			t.Errorf("resumed history missing %q:\n%s", want, hist)
 		}
+	}
+}
+
+// TestConnectForwardsThinkingDeltas: connect mode streams the model's
+// reasoning upstream as thinking_delta envelopes tagged with the running
+// turn, so the plane can show it live.
+func TestConnectForwardsThinkingDeltas(t *testing.T) {
+	redirectUserConfig(t)
+	t.Chdir(t.TempDir())
+	reg, err := buildTestRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thinking []string
+	plane := newE2EPlane(t, func(pc *e2eConn) {
+		pc.send(wsclient.Query{Type: "query", ID: "q-think", Query: "ponder"})
+		for {
+			_, data, err := pc.conn.Read(pc.ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Type     string `json:"type"`
+				ID       string `json:"id"`
+				Envelope struct {
+					Type string `json:"type"`
+					Data struct {
+						Text string `json:"text"`
+					} `json:"data"`
+				} `json:"envelope"`
+			}
+			if json.Unmarshal(data, &m) != nil {
+				continue
+			}
+			if m.Type == "result" {
+				break
+			}
+			if m.Type == "event" && m.Envelope.Type == "thinking_delta" && m.ID == "q-think" {
+				thinking = append(thinking, m.Envelope.Data.Text)
+			}
+		}
+		pc.send(wsclient.Shutdown{Type: "shutdown", ID: "s-think"})
+		pc.readUntil("shutdown_ack")
+	})
+	cfg := &cliConfig{
+		Model:           "alpha",
+		SkipPermissions: true,
+		NoContextFiles:  true,
+		Trust:           true,
+		ConnectURL:      plane.url(),
+		ConnectBackoff:  10 * time.Millisecond,
+		deps:            &deps{models: reg, llms: &fakeLLMs{llm: &scriptedLLM{answer: "done", thinking: "hmm, let me see"}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := runConnect(ctx, cfg); err != nil {
+		t.Fatalf("runConnect: %v", err)
+	}
+	if got := strings.Join(thinking, ""); got != "hmm, let me see" {
+		t.Fatalf("forwarded thinking = %q, want %q", got, "hmm, let me see")
 	}
 }

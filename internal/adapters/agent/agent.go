@@ -211,7 +211,10 @@ func (a *Agent) callLLM(ctx context.Context, req common.CompletionRequest, tools
 		var resp common.CompletionResponse
 		var err error
 		streamed := false
-		if a.streamCallback != nil {
+		// Either callback wants the stream: connect mode registers only
+		// the thinking one. Thinking alone does not block a retry — a
+		// repeated reasoning preview is cosmetic, a lost turn is not.
+		if a.streamCallback != nil || a.thinkingCallback != nil {
 			resp, err = a.doStreamingReasoning(ctx, req, &streamed)
 		} else {
 			resp, err = a.llm().SendMessageWithTools(ctx, req, tools)
@@ -260,8 +263,10 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 	for event := range events {
 		switch event.Type {
 		case common.StreamEventDelta:
-			*streamed = true
-			a.streamCallback(event.Text)
+			if a.streamCallback != nil {
+				*streamed = true
+				a.streamCallback(event.Text)
+			}
 		case common.StreamEventThinking:
 			if a.thinkingCallback != nil {
 				a.thinkingCallback(event.Text)

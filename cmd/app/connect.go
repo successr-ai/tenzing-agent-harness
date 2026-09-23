@@ -62,6 +62,18 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 	if !cfg.ApprovalTimeoutSet && !cfg.NoPermissions && !cfg.SkipPermissions {
 		opts = append(opts, harness.WithApprovalTimeout(0))
 	}
+	// Thinking deltas never reach the bus (serve and print register the
+	// same handler), so they go upstream directly, tagged like bus events.
+	// client is assigned below; deltas only flow during a turn, after Run.
+	var client *wsclient.Client
+	opts = append(opts, harness.WithThinkingDeltaHandler(func(runnerID, text string) {
+		if client == nil {
+			return
+		}
+		if payload, err := json.Marshal(wire.ThinkingDelta(runnerID, text)); err == nil {
+			client.SendEvent(client.ConnContext(), client.Running(), payload)
+		}
+	}))
 	opts = append(opts, extraOpts...)
 
 	mainLLM, err := cfg.deps.llms.Get(model)
@@ -100,7 +112,7 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		return runConnectTurn(ctx, h, stats, cmd)
 	})
 
-	client, err := wsclient.New(wsclient.Options{
+	client, err = wsclient.New(wsclient.Options{
 		URL:     cfg.ConnectURL,
 		Token:   cfg.ConnectToken,
 		CWD:     cwd,
