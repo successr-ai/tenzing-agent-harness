@@ -11,22 +11,27 @@ model: main-model
 # and pick which model serves the turn. Every decision fails open: if the
 # endpoint is unreachable the harness behaves exactly as it would without it,
 # and the gate can only tighten a permission decision, never loosen one.
-systemone_model: jev
+# Off by default — it needs a TypeSafe or OpenRouter key. To turn it on,
+# uncomment this line and the openrouter-jev provider and jev model below.
+# systemone_model: jev
 
 # Tunes the consumers above; no effect without systemone_model. Every key is
-# optional — omit the block entirely for the defaults shown.
-systemone:
-  recent_messages: 4     # trailing messages sent with each question; 0 = none
-  gate:
-    enabled: true
-    ask_above: 0.6       # escalate to an approval prompt above this
-    deny_above: 0.9      # refuse an out-of-scope call above this
-  advisor:
-    enabled: true        # needs advisor_model; nothing to consult otherwise
-    consult_above: 0.7
-  # routing:
-  #   enabled: true        # on by itself once two models.llm entries have a description
-  #   min_confidence: 0.5
+# optional — omit the block entirely for the defaults shown. The gate sends a
+# call to you for any of three reasons: it reaches outside the working
+# directory (always, no threshold — the temp directory is exempt), it may
+# destroy unrecoverable work, or it may touch secrets.
+# systemone:
+#   recent_messages: 4       # trailing messages per question (assistant text for advisor/routing, all roles for the gate); 0 = none
+#   gate:
+#     enabled: true
+#     irreversible_ask: 0.45 # ask when the call may destroy unrecoverable work
+#     secrets_ask: 0.7       # ask when the call may read or send secret material
+#   advisor:
+#     enabled: true          # needs advisor_model; nothing to consult otherwise
+#     consult_above: 0.5
+#   routing:
+#     enabled: true          # on by itself once two models.llm entries have a description
+#     min_confidence: 0.5
 
 # Set permissions for the agent. The default is Read-only, which is safe for most users.
 permissions:

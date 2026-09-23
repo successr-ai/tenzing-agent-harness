@@ -1,0 +1,172 @@
+# Labelled turn moments for measuring the advisor-need question.
+#
+# Each case is the batch A state the harness would send at the start of an
+# iteration, plus one fact, defaulting to false:
+#
+#   needs_advisor   the agent is at a point its advisor should see before it
+#                   acts again: committing to an approach, stuck on a
+#                   recurring failure, reversing itself, or about to call a
+#                   non-trivial task done
+#
+# Label the moment on its own terms. Orienting, and carrying out a plan that
+# was already consulted on without surprises, are not decision points.
+#
+# The state is the request plus the text of the agent's recent messages —
+# tool calls and their results are not sent, so a fixture carries only what
+# the agent said, newest last. Write it the way agents actually narrate:
+# briefly, and often not at all between calls (an iteration that only called
+# tools contributes no line). `advisor_consults` is the harness's count.
+
+cases:
+  # ---- settled: no consult needed ---------------------------------------
+  - name: first iteration, nothing done yet
+    iteration: 1
+    request: Add a --verbose flag to the CLI that turns on debug logging.
+    needs_advisor: false
+
+  - name: orienting with reads and searches
+    iteration: 3
+    elapsed_seconds: 12
+    request: Add a --verbose flag to the CLI that turns on debug logging.
+    assistant:
+      - Let me look at how the CLI flags are defined.
+      - The flags live in cmd/app/options.go; there is already a --quiet flag I can model this on.
+    needs_advisor: false
+
+  - name: executing a consulted plan, edits going cleanly
+    iteration: 6
+    elapsed_seconds: 40
+    advisor_consults: 1
+    request: Add a --verbose flag to the CLI that turns on debug logging.
+    assistant:
+      - Following the advisor's plan — adding the flag in options.go first.
+      - Flag added. Now wiring it to the slog level in root.go.
+    needs_advisor: false
+
+  - name: just consulted, nothing new since
+    iteration: 4
+    elapsed_seconds: 25
+    advisor_consults: 1
+    request: Fix the off-by-one in the pagination helper.
+    assistant:
+      - The loop in pageEnd looks like the culprit; checking with the advisor before I change it.
+      - The advisor agrees the <= should be <. Making that change and adding a last-page test.
+    needs_advisor: false
+
+  - name: reading a second file to confirm a detail
+    iteration: 5
+    elapsed_seconds: 30
+    advisor_consults: 1
+    request: Fix the off-by-one in the pagination helper.
+    assistant:
+      - Changed <= to < in pageEnd.
+      - Checking the existing test file so the new case matches its style.
+    needs_advisor: false
+
+  - name: a one-answer lookup
+    iteration: 2
+    elapsed_seconds: 6
+    request: Which file defines the default HTTP port?
+    assistant:
+      - Searching the config package for the port constant.
+    needs_advisor: false
+
+  - name: running tests after a consulted change, all green
+    iteration: 8
+    elapsed_seconds: 70
+    advisor_consults: 1
+    request: Fix the off-by-one in the pagination helper.
+    assistant:
+      - Added TestPageEndLastPage.
+      - Running the package tests.
+    needs_advisor: false
+
+  - name: listing a directory mid-plan
+    iteration: 7
+    elapsed_seconds: 55
+    advisor_consults: 1
+    request: Move the retry helpers into their own package.
+    assistant:
+      - The advisor suggested internal/retry with backoff.go and jitter.go moved over, then the three importers updated.
+      - Listing the current package to see exactly which files move.
+    needs_advisor: false
+
+  # ---- decision points: consult first -----------------------------------
+  - name: about to start implementing after orientation
+    iteration: 4
+    elapsed_seconds: 20
+    request: Add rate limiting to the public API endpoints.
+    assistant:
+      - The public routes are all registered under /v1/ in api/server.go.
+      - I will add a token-bucket middleware in api/middleware.go and wrap the /v1/ handler with it.
+    needs_advisor: true
+
+  - name: the same test keeps failing
+    iteration: 11
+    elapsed_seconds: 140
+    advisor_consults: 1
+    request: Fix the flaky TestReconnect.
+    assistant:
+      - Increased the reconnect deadline to 2s.
+      - Still timing out waiting for reconnect. Trying a retry loop around the dial instead.
+      - Same timeout again. Let me try resetting the backoff between attempts.
+    needs_advisor: true
+
+  - name: reversing an approach already taken
+    iteration: 9
+    elapsed_seconds: 95
+    advisor_consults: 1
+    request: Cache the parsed config so it is not re-read on every request.
+    assistant:
+      - Added a package-level cache in config.go.
+      - The race detector flags the cache. The package-level cache was the wrong call — I will rip it out and pass the parsed config through the handler constructor instead.
+    needs_advisor: true
+
+  - name: about to declare a multi-file task done
+    iteration: 14
+    elapsed_seconds: 210
+    advisor_consults: 1
+    request: Move the retry helpers into their own package.
+    assistant:
+      - Updated the last importer, internal/client.
+      - All importers are updated and the build passes. The move is complete.
+    needs_advisor: true
+
+  - name: choosing between two designs
+    iteration: 5
+    elapsed_seconds: 35
+    request: Let users export their data.
+    assistant:
+      - Records come from the Store interface; there is no bulk read yet.
+      - This could be a synchronous endpoint that streams CSV, or a background job that emails a link. I will go with the background job.
+    needs_advisor: true
+
+  - name: an unexpected result contradicts the plan
+    iteration: 7
+    elapsed_seconds: 60
+    advisor_consults: 1
+    request: Speed up the report query.
+    assistant:
+      - Added the index on (account_id, created_at) as the advisor suggested.
+      - EXPLAIN still shows a sequential scan on reports — the planner is not using the new index.
+    needs_advisor: true
+
+  - name: about to write a migration that changes a schema
+    iteration: 6
+    elapsed_seconds: 45
+    request: Make email addresses unique per account.
+    assistant:
+      - The users table has no constraint on email today.
+      - I will write a migration adding a unique index on (account_id, lower(email)).
+    needs_advisor: true
+
+  - name: a second approach failing the same way as the first
+    iteration: 13
+    elapsed_seconds: 180
+    advisor_consults: 1
+    request: Get the Docker build working on arm64.
+    assistant:
+      - Switched the base image to the multi-arch tag.
+      - Still "exec format error". Switching to buildx with --platform linux/arm64.
+      - Same exec format error with buildx.
+    needs_advisor: true

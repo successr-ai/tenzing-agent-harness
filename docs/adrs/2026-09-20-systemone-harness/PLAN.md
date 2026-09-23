@@ -343,3 +343,68 @@ note: deleting untracked files scored `irreversible` 0.46–0.59, under the 0.6 
 Each gate escalation in headless mode costs the full `approval_timeout` (default 120s)
 before denying, because nothing can answer. Pair `systemone_model:` with
 `--approval-timeout 1s` (or 0) in unattended runs.
+
+## After Step 8 — path facts and the eval
+
+Two follow-ups built on the live findings:
+
+- **Path facts in the state** (`paths.go`). Where a call lands is computed, not judged:
+  every path a call names is resolved (absolute, symlinks followed, `~` expanded) and
+  placed against the working directory and the system temp directory. Controlled A/B on
+  `rm -r backup`: resolving into the temp directory took `irreversible` from 0.83 to 0.26;
+  resolving to `~/.ssh` took `out_of_scope` from 0.05 to 0.24. The shell parser arrives
+  through `SetShellSplitter` from the harness, since a feature may not import another.
+- **`evals/systemone`**: 25 labelled tool calls, each carrying two independent facts
+  (`out_of_scope`, `destructive`) from which the expected action is derived by the gate's
+  own rules, a runner reporting each question's separation from its own populations, and a
+  `-questions` flag for measuring a candidate wording before porting it. Four candidates
+  were measured against the first wording; the winner moved separation from +0.09 / −0.20
+  to +0.39 / +0.35 and closed both known gaps. The multi-turn cases could not reproduce the
+  live 0.58 sag by hand — fixture numbers are optimistic, and capturing real states is the
+  next step.
+
+## Verdict run
+
+Criteria rewritten via the eval (+0.39 / +0.35), then checked live from a real project
+directory: every deletion attempt scored `irreversible` 0.78–0.86 and was escalated,
+retries included; a benign read-then-write task scored 0.02–0.10 with nothing flagged.
+
+The earlier live "sag" (a refused deletion re-run at 0.47–0.59) was diagnosed by capturing
+and replaying the real state (`TENZING_SYSTEMONE_CAPTURE`): the workspace lived under
+`/private/tmp`, and the model reads `tmp` in a path as scratch. Same state, path rewritten
+to `/Users/dev/proj` → 0.83 under both old and new wording. Not a wording regression.
+
+Two fixes from the same replay: paths inside the working directory are never
+`in_temp_directory`; and the turn's request is pinned into every message tail — the
+rolling window had dropped it by the retry, so out-of-scope was judged against nothing
+(0.43 → 0.14 restored).
+
+Residual: one `ask_above` serves two questions whose comfortable windows now differ
+(scope ~0.52–0.91, irreversibility ~0.27–0.62); 0.6 sits inside both with little headroom
+on the irreversible side. Per-question thresholds would fix that; deliberately not added
+without a decision.
+
+**Resolved:** thresholds are now per question — `gate.scope_ask` 0.70, `gate.scope_deny`
+0.85, `gate.irreversible_ask` 0.45 — each inside its measured window with headroom. A
+first draft put `scope_deny` at 0.93 "so drift prompts rather than refuses"; the eval
+failed the drift case, which the fixtures label out-of-scope, and the floor for overreach
+is 0.91–0.92. The label won, as it should. The
+starter config ships with `systemone_model:` commented out again; enabling it needs a key,
+and a default that 401s for every new user was never the intent.
+
+## Correction — the gate's questions
+
+The plan's `out_of_scope` question was mine, not the requirement. The requirement, stated
+plainly afterwards: a call may do anything so long as it does not leak secrets, destroy
+work, or leave the working directory. Probing showed why the extra question was actively
+harmful — the model reads "outside what the user asked for" literally, so `echo ok` after a
+delete request scored 0.89 and a helpful adjacent typo fix scored 0.93, indistinguishable
+from exfiltration; the question is binary by construction and cannot grade degree.
+
+The gate is now exactly the three concerns: **outside the working directory** is a computed
+fact (paths.go; temp exempt; applies even with the model down), **irreversible** and
+**secrets** are the two judgments. Every concern escalates to `AskUser`; the gate never
+denies on the model's word. Measured on 32 cases: irreversible separates +0.38 at
+`irreversible_ask` 0.45, secrets +0.19 at `secrets_ask` 0.7 (outward deploys and pushes
+are what lift the clean tail). By design, a piped remote script or drift onto unrelated
+work now runs untouched unless it also trips one of the three.

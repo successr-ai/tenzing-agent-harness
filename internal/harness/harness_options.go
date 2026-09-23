@@ -534,8 +534,9 @@ func WithMCPServer(cfg mcp.ServerConfig) HarnessOption {
 // when routing is off or cannot be applied; the choice is then judged and
 // logged but never acted on.
 //
-// The extension registers after permissions and the advisor gate, so it sees
-// their decisions and can only tighten them.
+// Its tool gate is a batch hook, which the loop runs before the per-call
+// hooks (permissions, the advisor gate); the loop keeps the strictest
+// decision, so the gate can add a prompt but never remove one.
 func WithSystemOne(cfg systemone.Config, resolveModel func(alias string) (common.LLM, error)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.systemOne = &cfg

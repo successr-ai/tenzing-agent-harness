@@ -9,14 +9,17 @@
 // It is an advisor to the harness, never a dependency of it: an unreachable
 // endpoint, a malformed answer, or an answer below its confidence floor all
 // leave the harness doing exactly what it would have done without this
-// extension. The extension only ever tightens a decision — it registers after
-// permissions and the advisor gate, and core's never-de-escalate rule holds it
-// to escalations.
+// extension. The extension only ever tightens a decision: its gate runs as a
+// batch hook, before the per-call hooks (permissions, the advisor gate), and
+// core keeps the strictest decision any hook reaches, so nothing it answers
+// can lower theirs, nor theirs its.
 package systemone
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -39,10 +42,11 @@ type Candidate struct {
 }
 
 // GateConfig tunes the tool gate. Zero thresholds mean the Default* values.
+// The working-directory rule has no threshold: it is a fact, not a judgment.
 type GateConfig struct {
-	Disabled  bool
-	AskAbove  float64
-	DenyAbove float64
+	Disabled        bool
+	IrreversibleAsk float64
+	SecretsAsk      float64
 }
 
 // AdvisorConfig tunes the advisor-need judgment. Disable it when the advisor
@@ -90,9 +94,19 @@ type Config struct {
 	// Timeout bounds one batch, including the client's retries. 0 =
 	// DefaultBatchTimeout; negative disables the deadline.
 	Timeout time.Duration
-	Gate    GateConfig
-	Advisor AdvisorConfig
-	Routing RoutingConfig
+	// WorkingDir is the directory tenzing was started in — the frame every
+	// path fact is judged against. Empty means the process's own cwd.
+	WorkingDir string
+	// CaptureFile, when set, appends every batch — state, questions, answers
+	// — as one JSON line, so a live judgment can be replayed in evals/
+	// against a candidate wording. Hand-written fixtures measured 0.84 on a
+	// deletion that scored 0.49 live; the only way to close that gap is to
+	// replay what the model actually saw. Debug aid; leave empty in
+	// production, the file holds conversation content.
+	CaptureFile string
+	Gate        GateConfig
+	Advisor     AdvisorConfig
+	Routing     RoutingConfig
 }
 
 // Ext is the extension. Its dependencies beyond the client are late-bound by
@@ -100,23 +114,27 @@ type Config struct {
 // are all built after the extension set, the same ordering advisor.GateExt
 // solves with SetClassifier.
 type Ext struct {
-	client  common.SystemOne
-	recentN int
-	timeout time.Duration
-	gate    GateConfig
-	advisor AdvisorConfig
-	routing RoutingConfig
+	client   common.SystemOne
+	recentN  int
+	timeout  time.Duration
+	workdir  string
+	tempdirs []string
+	capture  string
+	gate     GateConfig
+	advisor  AdvisorConfig
+	routing  RoutingConfig
 
 	mu           sync.Mutex
 	emitter      core.Emitter
 	messages     func(context.Context) ([]common.Message, error)
 	router       func(context.Context, string) error
 	classify     func(name string) bool // true = read-only
+	shellArgs    func(command string) []string
 	runnerID     string
-	advisorArmed bool     // a consult was judged due and has not happened yet
-	failures     int      // consecutive failed batches; resets on success and each turn
-	consults     int      // advisor calls issued this turn
-	recentTools  []string // tool names issued this turn, oldest first
+	request      string // the turn's opening user message, rendered; pinned into every tail
+	advisorArmed bool   // a consult was judged due and has not happened yet
+	failures     int    // consecutive failed batches; resets on success and each turn
+	consults     int    // advisor calls issued this turn
 }
 
 // New builds the extension. A nil Client yields a nil extension so a caller
@@ -129,22 +147,32 @@ func New(cfg Config) *Ext {
 	if timeout == 0 {
 		timeout = DefaultBatchTimeout
 	}
+	workdir := cfg.WorkingDir
+	if workdir == "" {
+		workdir, _ = os.Getwd()
+	}
+	// Both frames are resolved once, here: comparing a resolved path against
+	// an unresolved root is how /tmp (a symlink to /private/tmp on macOS)
+	// reads as "not the temp directory".
 	return &Ext{
-		client:  cfg.Client,
-		recentN: cfg.RecentMessages,
-		timeout: timeout,
-		gate:    withGateDefaults(cfg.Gate),
-		advisor: withAdvisorDefaults(cfg.Advisor),
-		routing: withRoutingDefaults(cfg.Routing),
+		client:   cfg.Client,
+		recentN:  cfg.RecentMessages,
+		timeout:  timeout,
+		workdir:  followSymlinks(workdir),
+		tempdirs: tempRoots(),
+		capture:  cfg.CaptureFile,
+		gate:     withGateDefaults(cfg.Gate),
+		advisor:  withAdvisorDefaults(cfg.Advisor),
+		routing:  withRoutingDefaults(cfg.Routing),
 	}
 }
 
 func withGateDefaults(c GateConfig) GateConfig {
-	if c.AskAbove == 0 {
-		c.AskAbove = DefaultGateAsk
+	if c.IrreversibleAsk == 0 {
+		c.IrreversibleAsk = DefaultIrreversibleAsk
 	}
-	if c.DenyAbove == 0 {
-		c.DenyAbove = DefaultGateDeny
+	if c.SecretsAsk == 0 {
+		c.SecretsAsk = DefaultSecretsAsk
 	}
 	return c
 }
@@ -195,6 +223,17 @@ func (e *Ext) SetClassifier(f func(name string) bool) {
 	e.classify = f
 }
 
+// SetShellSplitter late-binds the shell word splitter used to find the paths
+// a bash command names. It comes from the harness rather than an import
+// because the parser lives under another feature (permissions/shell) and a
+// feature may not reach into one. Unbound, bash calls simply report no
+// paths.
+func (e *Ext) SetShellSplitter(f func(command string) []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shellArgs = f
+}
+
 // routingEnabled reports whether there is a choice worth asking about.
 func (e *Ext) routingEnabled() bool { return len(e.routing.Candidates) >= 2 }
 
@@ -227,7 +266,37 @@ func (e *Ext) evaluate(ctx context.Context, batch string, req common.EvaluationR
 	e.mu.Lock()
 	e.failures = 0
 	e.mu.Unlock()
+	e.record(batch, req, resp)
 	return resp, true
+}
+
+// record appends one batch to the capture file. Best-effort: a capture that
+// cannot be written is logged and dropped, never allowed to disturb the
+// batch it describes.
+func (e *Ext) record(batch string, req common.EvaluationRequest, resp common.EvaluationResponse) {
+	if e.capture == "" {
+		return
+	}
+	line, err := json.Marshal(map[string]any{
+		"batch":     batch,
+		"model":     resp.Model,
+		"state":     req.State,
+		"questions": req.Questions,
+		"answers":   resp.Answers,
+	})
+	if err != nil {
+		slog.Warn("system one capture: encode", "error", err)
+		return
+	}
+	f, err := os.OpenFile(e.capture, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.Warn("system one capture: open", "path", e.capture, "error", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		slog.Warn("system one capture: write", "path", e.capture, "error", err)
+	}
 }
 
 // tripped reports whether this turn has already paid for enough failures.

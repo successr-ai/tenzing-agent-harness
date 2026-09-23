@@ -302,16 +302,16 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `deny` | list | Tools that are always blocked. |
 | `ask_origins` | list | Mount-origin prefixes whose unlisted tools require approval. Non-empty replaces the default `["mcp:"]`. |
 
-`systemone` keys. A System One model (declared under `models.systemone:`, above) makes three kinds of harness decision, in two batched requests per loop iteration. Every consumer fails open: an unreachable endpoint, a malformed answer or a low-confidence one all leave the harness doing exactly what it would have done without the model. The gate only ever tightens a decision — it cannot approve what the permission policy would ask about. Thresholds are probabilities; their defaults live with the question wording they were calibrated against, in `internal/features/systemone/questions.go`.
+`systemone` keys. A System One model (declared under `models.systemone:`, above) makes three kinds of harness decision, in two batched requests per loop iteration. Every consumer fails open: an unreachable endpoint, a malformed answer or a low-confidence one all leave the harness doing exactly what it would have done without the model. The gate only ever tightens a decision, and only ever to an approval prompt — it never refuses on its own, and it cannot approve what the permission policy would ask about. It does not care whether a call was explicitly requested; it cares whether the call leaves the working directory, destroys something, or touches a secret. Thresholds are probabilities; their defaults live with the question wording they were calibrated against, in `internal/features/systemone/questions.go`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `recent_messages` | int | `4` | Trailing conversation messages included in every question's state. This content leaves the machine, and accuracy falls as the state fills with detail the decision does not need. `0` sends none. |
-| `gate.enabled` | bool | `true` | Judge each pending tool call: out of scope, or irreversible. |
-| `gate.ask_above` | float | `0.6` | Probability above which a call is escalated to an approval prompt. |
-| `gate.deny_above` | float | `0.9` | Probability above which an out-of-scope call is refused outright. Irreversibility alone never denies — a destructive call you did ask for reaches a human instead. |
+| `recent_messages` | int | `4` | Trailing messages included in each question's state: the last N assistant messages' text for the advisor and routing questions, the last N messages of any role for the tool gate. This content leaves the machine, and accuracy falls as the state fills with detail the decision does not need. `0` sends none. |
+| `gate.enabled` | bool | `true` | Send a tool call to you when it reaches outside the working directory (always; the system temp directory is exempt), or when the model judges it destructive or secret-touching. |
+| `gate.irreversible_ask` | float | `0.45` | Irreversibility probability above which a call is escalated to an approval prompt. |
+| `gate.secrets_ask` | float | `0.7` | Probability above which a call judged to read, print, copy or send credentials, keys or tokens is escalated. |
 | `advisor.enabled` | bool | `true` | Judge each iteration whether the executor should consult its advisor before acting. Turn off where the `advisor` tool is not mounted. |
-| `advisor.consult_above` | float | `0.7` | Probability above which state-changing calls are blocked until `advisor` runs. Read-only orientation always passes. |
+| `advisor.consult_above` | float | `0.5` | Probability above which state-changing calls are blocked until `advisor` runs. Read-only orientation always passes. |
 | `routing.enabled` | bool | auto | Pick the turn's model from the `models.llm:` entries carrying a `description:`. Enables itself when there are two or more; setting it `true` with fewer is a startup error. |
 | `routing.min_confidence` | float | `0.5` | Confidence below which a routing choice is ignored and the configured model keeps serving. |
 
@@ -319,7 +319,7 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 systemone_model: jev
 systemone:
   gate:
-    deny_above: 0.95     # tighter: deny only what it is nearly sure about
+    secrets_ask: 0.3     # more cautious about anything that looks like a credential
   advisor:
     enabled: false       # no advisor tool mounted
 ```
@@ -379,7 +379,9 @@ How it behaves:
 - **A dropped connection cancels the in-flight turn.** The turn is only meaningful while the control plane can observe it — an orphaned turn burning tokens with nobody watching is worse than a cancelled one, and the control plane owns the retry decision. On reconnect the agent reports what happened in `hello.last_turn` (`cancelled_disconnect`) and immediately accepts fresh work; session persistence means a retry resumes rather than starting over.
 - **One turn at a time, follow-ups FIFO.** A `query` arriving mid-turn queues; `cancel` stops the running turn and flushes the queue (serve-mode parity: cancelling wants the agent to stop, not to watch the next query start).
 - **Approvals are push.** A mutating tool call needing approval sends `approval_request` on the socket; the plane answers `approve` on the same connection. An `approve` carrying a `glob` adds a bash allow rule **in memory only** — grants die with the process, never leaking into later runs — unless `connect.ephemeral_grants: false` and the command's `scope` is not `"session"`, in which case it persists to settings.json like serve mode. For unattended fleets, prefer `dangerously_skip_permissions: true` (sandboxed) or `read_only: true` — the unattended default denies mutating tools after the approval timeout.
+- **A refused agent exits.** If the plane answers with `unexpected_agent` (it has no launch waiting for this process, usually because it restarted), the agent exits non-zero instead of reconnecting forever.
 - **Graceful shutdown.** A `shutdown` command cancels the running turn (its `result` reports `cancelled`), answers `shutdown_ack`, closes the socket, flushes session persistence, and exits 0. SIGTERM does the same without the ack. Neither reconnects. `hello.conversation_id` tells the plane which id to `--resume` on a relaunch, and each `result` carries `files_touched` — the paths of successful Read/Edit/Write calls — for the plane's judge.
+- **Live reasoning.** The model's thinking streams upstream as `thinking_delta` event envelopes while a turn runs, so the plane can show it as it arrives. Answer text is not streamed; it arrives whole in `llm.response`.
 - **Lossless backpressure.** A slow control plane stalls the agent's event pump rather than dropping events; nothing is lost while the connection lives. Disconnection is the only thing that discards a turn's event backlog — by design, since the turn was cancelled.
 
 The normative protocol spec is `docs/adrs/2026-09-12-control-plane-fleet/PROTOCOL.md` (versioned; currently protocol `"1"`): message tables both directions, correlation rules, the handshake, reconnect semantics, auth, and versioning. The control plane is external — build it against that document.

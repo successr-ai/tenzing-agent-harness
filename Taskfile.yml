@@ -13,6 +13,10 @@ tasks:
     desc: 'Build standalone binary to bin/tenzing (task build -- -ldflags ...)'
     cmd: go build -o bin/tenzing {{.CLI_ARGS}} ./cmd/app
 
+  eval:systemone:
+    desc: 'Measure the System One tool gate against evals/systemone/cases.yaml (needs OPENROUTER_API_KEY)'
+    cmd: go run ./evals/systemone {{.CLI_ARGS}}
+
   install:
     desc: 'Install tenzing to ~/.local/bin'
     cmd: go build -o {{.HOME}}/.local/bin/tenzing ./cmd/app

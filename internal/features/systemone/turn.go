@@ -21,11 +21,13 @@ func (e *Ext) BeforeIteration(ctx context.Context, tc *core.TurnContext) error {
 	e.runnerID = tc.RunnerID
 	if first {
 		e.advisorArmed = false
-		e.recentTools = nil
 		e.consults = 0
 		e.failures = 0 // a new turn re-arms the failure breaker
 	}
 	e.mu.Unlock()
+	if first {
+		e.pinRequest(ctx)
+	}
 
 	questions := map[string]common.Question{}
 	if !e.advisor.Disabled {
@@ -60,15 +62,14 @@ func (e *Ext) BeforeIteration(ctx context.Context, tc *core.TurnContext) error {
 
 func (e *Ext) turnState(ctx context.Context, tc *core.TurnContext) turnState {
 	e.mu.Lock()
-	tools := append([]string(nil), e.recentTools...)
 	consults := e.consults
 	e.mu.Unlock()
 	return turnState{
-		Iteration:       tc.Iteration,
-		ElapsedSeconds:  int(tc.Elapsed.Seconds()),
-		RecentTools:     tools,
-		AdvisorConsults: consults,
-		RecentMessages:  e.recentMessages(ctx),
+		Iteration:         tc.Iteration,
+		ElapsedSeconds:    int(tc.Elapsed.Seconds()),
+		AdvisorConsults:   consults,
+		Request:           e.requestText(),
+		AssistantMessages: e.assistantMessages(ctx),
 	}
 }
 

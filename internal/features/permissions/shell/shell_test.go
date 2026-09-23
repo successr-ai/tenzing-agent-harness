@@ -174,3 +174,66 @@ func dump(a Analysis) string {
 	}
 	return b.String()
 }
+
+func TestRedirectTargets(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want []string
+	}{
+		{"echo x > out.txt", []string{"out.txt"}},
+		{"echo x >> ~/.zshrc", []string{"~/.zshrc"}},
+		{"sort < /etc/hosts", []string{"/etc/hosts"}},
+		{"make &> build.log", []string{"build.log"}},
+		{"cmd 2>&1 >/dev/null", nil},
+		{"cmd >&2", nil},
+		{"cat <<EOF\nhi\nEOF", nil},
+		{"cat <<< /etc/hosts", nil},
+		{"echo x > \"$HOME/out\"", []string{"${HOME}/out"}},
+		{"echo x > $(mktemp)", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			a := Analyze(tt.cmd, Builtin())
+			if a.Err != nil {
+				t.Fatalf("Analyze: %v", a.Err)
+			}
+			var got []string
+			for _, seg := range a.Segments {
+				for _, r := range seg.Redirects {
+					got = append(got, r.Value+r.Template)
+				}
+			}
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Fatalf("redirects = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestArgTemplate(t *testing.T) {
+	tests := []struct {
+		word string
+		want string // Template; "" means none
+	}{
+		{"$HOME/.ssh", "${HOME}/.ssh"},
+		{"${HOME}/.ssh", "${HOME}/.ssh"},
+		{`"$HOME/My Docs"`, "${HOME}/My Docs"},
+		{"$HOME/$USER", "${HOME}/${USER}"},
+		{"${HOME:-/x}", ""},
+		{"${#HOME}", ""},
+		{"$(pwd)/x", ""},
+		{"$HOME/*.pem", "${HOME}/*.pem"}, // glob characters stay literal, as in static
+		{"~/x", ""},                      // static, so no template
+	}
+	for _, tt := range tests {
+		t.Run(tt.word, func(t *testing.T) {
+			a := Analyze("cat "+tt.word, Builtin())
+			if a.Err != nil || len(a.Segments) == 0 || len(a.Segments[0].Argv) != 2 {
+				t.Fatalf("unexpected analysis: %+v", a)
+			}
+			if got := a.Segments[0].Argv[1].Template; got != tt.want {
+				t.Fatalf("Template = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -36,6 +36,9 @@ func systemOneOption(cfg *cliConfig) (harness.HarnessOption, error) {
 	sc := systemone.Config{
 		Client:         client,
 		RecentMessages: systemone.DefaultRecentMessages,
+		// Debug aid, env-only on purpose: the file holds conversation
+		// content, and a config key would make leaving it on too easy.
+		CaptureFile: os.Getenv("TENZING_SYSTEMONE_CAPTURE"),
 	}
 	// Nothing to consult without the advisor tool, which advisor_model:
 	// mounts.
@@ -49,11 +52,11 @@ func systemOneOption(cfg *cliConfig) (harness.HarnessOption, error) {
 		if v := b.Gate.Enabled; v != nil && !*v {
 			sc.Gate.Disabled = true
 		}
-		if v := b.Gate.AskAbove; v != nil {
-			sc.Gate.AskAbove = *v
+		if v := b.Gate.IrreversibleAsk; v != nil {
+			sc.Gate.IrreversibleAsk = *v
 		}
-		if v := b.Gate.DenyAbove; v != nil {
-			sc.Gate.DenyAbove = *v
+		if v := b.Gate.SecretsAsk; v != nil {
+			sc.Gate.SecretsAsk = *v
 		}
 		switch v := b.Advisor.Enabled; {
 		case v == nil:

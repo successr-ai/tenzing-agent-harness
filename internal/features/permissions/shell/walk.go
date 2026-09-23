@@ -1,6 +1,8 @@
 package shell
 
 import (
+	"bytes"
+	"regexp"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -156,8 +158,7 @@ func (a *analyzer) call(s *syntax.Stmt, c *syntax.CallExpr) Segment {
 	a.subst(c)
 	argv := make([]Arg, len(c.Args))
 	for i, w := range c.Args {
-		v, ok := static(w)
-		argv[i] = Arg{Value: v, Static: ok}
+		argv[i] = evalArg(w)
 	}
 	bare := *s
 	bare.Background, bare.Negated, bare.Coprocess, bare.Comments = false, false, false, nil
@@ -190,6 +191,9 @@ func (a *analyzer) redirect(r *syntax.Redirect, seg *Segment) {
 	if r.Hdoc != nil {
 		a.subst(r.Hdoc)
 	}
+	if target, ok := redirectTarget(r); ok {
+		seg.Redirects = append(seg.Redirects, target)
+	}
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
 	case syntax.DplOut:
@@ -211,6 +215,99 @@ func (a *analyzer) redirect(r *syntax.Redirect, seg *Segment) {
 		seg.Class |= FSWrite
 		seg.Why = append(seg.Why, "redirect "+r.Op.String()+" "+target)
 	}
+}
+
+// redirectTarget reports the file a redirect names, when it names one
+// literally. Here-docs and here-strings carry text, not a path; `>&2` and
+// `<&-` name descriptors.
+func redirectTarget(r *syntax.Redirect) (Arg, bool) {
+	switch r.Op {
+	case syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+		return Arg{}, false
+	}
+	target := evalArg(r.Word)
+	v := target.Value
+	switch {
+	case !target.Static:
+		return target, target.Template != ""
+	case v == "", devSinks[v], strings.HasPrefix(v, "/dev/fd/"):
+		return Arg{}, false
+	case (r.Op == syntax.DplOut || r.Op == syntax.DplIn) && (v == "-" || isDigits(v)):
+		return Arg{}, false
+	}
+	return target, true
+}
+
+func evalArg(w *syntax.Word) Arg {
+	if v, ok := static(w); ok {
+		return Arg{Value: v, Static: true}
+	}
+	return Arg{Template: template(w)}
+}
+
+// template renders a word whose only expansions are plain parameters, each
+// as ${NAME}. Anything else — a substitution, a parameter with an
+// operator, a literal `$` that os.Expand would misread — yields "".
+func template(w *syntax.Word) string {
+	var b strings.Builder
+	lit := func(s string) bool {
+		if strings.ContainsRune(s, '$') {
+			return false
+		}
+		b.WriteString(s)
+		return true
+	}
+	param := func(p *syntax.ParamExp) bool {
+		name, ok := plainParam(p)
+		if ok {
+			b.WriteString("${" + name + "}")
+		}
+		return ok
+	}
+	for _, p := range w.Parts {
+		ok := false
+		switch x := p.(type) {
+		case *syntax.Lit:
+			ok = lit(unescape(x.Value, false))
+		case *syntax.SglQuoted:
+			ok = lit(x.Value)
+		case *syntax.ParamExp:
+			ok = param(x)
+		case *syntax.DblQuoted:
+			ok = true
+			for _, q := range x.Parts {
+				switch y := q.(type) {
+				case *syntax.Lit:
+					ok = ok && lit(unescape(y.Value, true))
+				case *syntax.ParamExp:
+					ok = ok && param(y)
+				default:
+					ok = false
+				}
+			}
+		}
+		if !ok {
+			return ""
+		}
+	}
+	return b.String()
+}
+
+var plainParamRe = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
+
+// plainParam reports the name of a `$NAME` / `${NAME}` expansion. The
+// struct has a field per operator, and more arrive with each release, so
+// the check is on the printed form rather than on the fields.
+func plainParam(p *syntax.ParamExp) (string, bool) {
+	var buf bytes.Buffer
+	if err := syntax.NewPrinter().Print(&buf, &syntax.Word{Parts: []syntax.WordPart{p}}); err != nil {
+		return "", false
+	}
+	m := plainParamRe.FindStringSubmatch(buf.String())
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 func isDigits(s string) bool {

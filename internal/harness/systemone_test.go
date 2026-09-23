@@ -3,7 +3,9 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +18,7 @@ import (
 )
 
 // fakeJudge answers whatever is scripted for a question id, matching on the
-// id's suffix so per-call gate questions ("<call id>#out_of_scope") need no
+// id's suffix so per-call gate questions ("<call id>#irreversible") need no
 // knowledge of the model-generated call ids.
 type fakeJudge struct {
 	mu       sync.Mutex
@@ -70,22 +72,43 @@ func decisionEvents(t *testing.T, ch <-chan core.Event) []core.SystemOneDecision
 	}
 }
 
-// TestSystemOneGateDeniesAToolCall: the decision model judges the call out of
-// scope, so it never runs and the model is told why.
-func TestSystemOneGateDeniesAToolCall(t *testing.T) {
-	dir := t.TempDir()
+// outsideTarget is a file just outside the harness's working directory (the
+// package dir) and outside the temp root, which the gate exempts. Removed on
+// cleanup in case a regression lets the write through.
+func outsideTarget(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(filepath.Dir(wd), fmt.Sprintf("zz-gate-%s.txt", t.Name()))
+	t.Cleanup(func() { _ = os.Remove(target) })
+	return target
+}
+
+// TestSystemOneGateStopsAWriteOutsideTheWorkingDirectory: with a decision
+// model configured, a write outside the project reaches a human — who
+// declines, so it never lands. The judge answers nothing: the rule is a fact
+// and holds without it.
+func TestSystemOneGateStopsAWriteOutsideTheWorkingDirectory(t *testing.T) {
+	target := outsideTarget(t)
 	scripted := newScriptedAgent(
-		toolStep("bash", jsonInput(map[string]any{"command": "echo hi > " + dir + "/out.txt"})),
+		toolStep("Write", jsonInput(map[string]any{"file_path": target, "content": "hi"})),
 		finalStep("done"),
 	)
-	judge := &fakeJudge{bySuffix: map[string]common.Answer{"#out_of_scope": yes(0.99)}}
+	judge := &fakeJudge{}
 	bus := eventbus.NewEventBus()
 	events := bus.Subscribe(32)
+	var reasons []string
 
 	h := newTestHarness(t,
 		WithAgentBuilder(func(common.LLM, string) (core.Agent, error) { return scripted, nil }),
 		WithPermissionsDisabled(),
 		WithEventBus(bus),
+		WithHooks(eventbus.Hooks{OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
+			reasons = append(reasons, e.Reason)
+			e.Respond(false)
+		}}),
 		WithSystemOne(systemone.Config{
 			Client:  judge,
 			Advisor: systemone.AdvisorConfig{Disabled: true},
@@ -94,20 +117,9 @@ func TestSystemOneGateDeniesAToolCall(t *testing.T) {
 	if _, err := h.RunTurn(context.Background(), "write it"); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	assertFileNotExists(t, dir+"/out.txt")
-
-	calls := scripted.capturedCalls()
-	if len(calls) < 2 {
-		t.Fatalf("agent calls = %d, want 2", len(calls))
-	}
-	var fedBack strings.Builder
-	for _, m := range calls[1].Messages {
-		for _, b := range m.Content {
-			fedBack.WriteString(b.ToolOutput)
-		}
-	}
-	if !strings.Contains(fedBack.String(), "outside what you asked for") {
-		t.Errorf("denial reason not fed back to the model:\n%s", fedBack.String())
+	assertFileNotExists(t, target)
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "outside the working directory") {
+		t.Fatalf("approval reasons = %q, want one naming the working directory", reasons)
 	}
 
 	evs := decisionEvents(t, events)
@@ -117,6 +129,44 @@ func TestSystemOneGateDeniesAToolCall(t *testing.T) {
 	if evs[0].Model != "jev-1.13.0" {
 		t.Errorf("event must log the version that answered, got %q", evs[0].Model)
 	}
+}
+
+// TestSystemOneGateCoversSubagents: a child loop touches the same
+// filesystem, so delegating a write must not route around the gate. The
+// child has no approver, so the escalation denies outright.
+func TestSystemOneGateCoversSubagents(t *testing.T) {
+	target := outsideTarget(t)
+	main := newScriptedAgent(
+		toolStep("spawn_agent", jsonInput(map[string]any{"task": "write the file"})),
+		finalStep("done"),
+	)
+	child := newScriptedAgent(
+		toolStep("Write", jsonInput(map[string]any{"file_path": target, "content": "hi"})),
+		finalStep("child-done"),
+	)
+	builds := 0
+	builder := func(common.LLM, string) (core.Agent, error) {
+		builds++
+		if builds == 1 {
+			return main, nil
+		}
+		return child, nil
+	}
+	h := newTestHarness(t,
+		WithAgentBuilder(builder),
+		WithPermissionsDisabled(),
+		WithSystemOne(systemone.Config{
+			Client:  &fakeJudge{},
+			Advisor: systemone.AdvisorConfig{Disabled: true},
+		}, nil),
+	)
+	if _, err := h.RunTurn(context.Background(), "delegate it"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if child.callCount() == 0 {
+		t.Fatal("the child never ran; the test proves nothing")
+	}
+	assertFileNotExists(t, target)
 }
 
 // TestSystemOneRoutesTheTurnsModel: routing runs inside the first iteration,
@@ -286,4 +336,98 @@ func TestSystemOneRoutingIsRaceFreeAgainstAModelReader(t *testing.T) {
 	if got := h.GetCurrentModel(); got != "fast-model" {
 		t.Fatalf("GetCurrentModel() = %q, want the routed model", got)
 	}
+}
+
+// TestShellWordsIncludeRedirectTargets: the gate finds paths in the words
+// shellWords returns, so a redirect target must be one of them — `echo x >
+// ~/.zshrc` names no path in its argv.
+func TestShellWordsIncludeRedirectTargets(t *testing.T) {
+	got := strings.Join(shellWords("echo x >> ~/.zshrc && sort < /etc/hosts"), " ")
+	if want := "echo x ~/.zshrc sort /etc/hosts"; got != want {
+		t.Fatalf("shellWords = %q, want %q", got, want)
+	}
+}
+
+// TestShellWordsExpandPlainParameters: `$HOME/.ssh` is where the bash tool
+// would look, since it inherits this environment; an unset variable drops
+// the word rather than inventing a location.
+func TestShellWordsExpandPlainParameters(t *testing.T) {
+	t.Setenv("ZZ_GATE_DIR", "/etc")
+	got := strings.Join(shellWords(`cat "$ZZ_GATE_DIR/hosts" $ZZ_UNSET_VAR/x > ${ZZ_GATE_DIR}/out`), " ")
+	if want := "cat /etc/hosts /etc/out"; got != want {
+		t.Fatalf("shellWords = %q, want %q", got, want)
+	}
+}
+
+// adviceJudge answers needs_advisor from a script, one entry per batch A
+// (one per iteration), and nothing else.
+type adviceJudge struct {
+	mu    sync.Mutex
+	needs []float64
+}
+
+func (j *adviceJudge) Evaluate(_ context.Context, req common.EvaluationRequest) (common.EvaluationResponse, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	answers := map[string]common.Answer{}
+	if _, ok := req.Questions["needs_advisor"]; ok && len(j.needs) > 0 {
+		answers["needs_advisor"] = yes(j.needs[0])
+		j.needs = j.needs[1:]
+	}
+	return common.EvaluationResponse{Model: "jev-1.13.0", Answers: answers}, nil
+}
+
+func (j *adviceJudge) GetCurrentModel() string { return "jev-fake" }
+
+// TestSystemOneSendsTheExecutorToItsAdvisor: after the turn's first consult
+// (which the advisor gate already requires), the decision model judges a
+// second one due. The executor is reminded, its next write is refused until
+// it calls advisor, and the same write then runs.
+func TestSystemOneSendsTheExecutorToItsAdvisor(t *testing.T) {
+	dir := t.TempDir()
+	blocked, allowed := filepath.Join(dir, "blocked.txt"), filepath.Join(dir, "allowed.txt")
+	scripted := newScriptedAgent(
+		toolStep("advisor", jsonInput(map[string]any{"question": "plan?"})),
+		toolStep("Write", jsonInput(map[string]any{"file_path": blocked, "content": "x"})),
+		toolStep("advisor", jsonInput(map[string]any{"question": "still right?"})),
+		toolStep("Write", jsonInput(map[string]any{"file_path": allowed, "content": "x"})),
+		finalStep("done"),
+	)
+	h := newTestHarness(t,
+		WithAgentBuilder(func(common.LLM, string) (core.Agent, error) { return scripted, nil }),
+		WithPermissionsDisabled(),
+		WithAdvisorLLM(&stubLLM{}),
+		WithSystemOne(systemone.Config{
+			Client: &adviceJudge{needs: []float64{0.1, 0.95, 0.1, 0.1, 0.1}},
+			Gate:   systemone.GateConfig{Disabled: true},
+		}, nil),
+	)
+	if _, err := h.RunTurn(context.Background(), "change it"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	calls := scripted.capturedCalls()
+	if len(calls) != 5 {
+		t.Fatalf("agent calls = %d, want 5", len(calls))
+	}
+	if !strings.Contains(strings.Join(calls[1].Reminders, "\n"), "Your advisor should see this") {
+		t.Errorf("iteration 2 reminders = %q, want the consult reminder", calls[1].Reminders)
+	}
+	assertFileNotExists(t, blocked)
+	if !strings.Contains(lastToolOutput(calls[2]), "Call `advisor` before this") {
+		t.Errorf("blocked write's result = %q, want the advisor block", lastToolOutput(calls[2]))
+	}
+	if _, err := os.Stat(allowed); err != nil {
+		t.Fatalf("the write after the consult must run: %v", err)
+	}
+}
+
+func lastToolOutput(c capturedCall) string {
+	var b strings.Builder
+	if n := len(c.Messages); n > 0 {
+		for _, blk := range c.Messages[n-1].Content {
+			b.WriteString(blk.ToolOutput)
+		}
+	}
+	return b.String()
 }

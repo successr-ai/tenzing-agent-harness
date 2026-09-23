@@ -112,7 +112,7 @@ func TestSystemOneOptionAppliesTheBlock(t *testing.T) {
 		"systemone_model: jev\n" +
 		"systemone:\n" +
 		"  recent_messages: 0\n" +
-		"  gate:\n    enabled: false\n    ask_above: 0.42\n" +
+		"  gate:\n    enabled: false\n    secrets_ask: 0.42\n" +
 		"  routing:\n    enabled: false\n"
 
 	var f cfgfile.File

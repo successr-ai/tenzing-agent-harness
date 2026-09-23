@@ -2,7 +2,10 @@ package systemone
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -53,26 +56,26 @@ func newGateExt(j common.SystemOne) *Ext {
 
 func TestGateThresholds(t *testing.T) {
 	tests := []struct {
-		name         string
-		scope, irrev float64
-		start        core.Decision
-		want         core.Decision
-		wantReason   string
+		name          string
+		irrev, secret float64
+		start         core.Decision
+		want          core.Decision
+		wantReason    string
 	}{
 		{"both low leaves the decision alone", 0.1, 0.1, core.Allow, core.Allow, ""},
-		{"scope over ask escalates to ask", 0.7, 0.0, core.Allow, core.AskUser, "outside what you asked for"},
-		{"scope over deny denies", 0.95, 0.0, core.Allow, core.Deny, "outside what you asked for"},
-		{"irreversible over ask escalates to ask", 0.1, 0.8, core.Allow, core.AskUser, "irreversible"},
-		{"irreversible never denies on its own", 0.1, 0.99, core.Allow, core.AskUser, "irreversible"},
+		{"irreversible over its ask escalates to ask", 0.5, 0.0, core.Allow, core.AskUser, "irreversible"},
+		{"secrets over its ask escalates to ask", 0.0, 0.8, core.Allow, core.AskUser, "secret material"},
+		{"nothing ever denies on the model's word", 0.99, 0.99, core.Allow, core.AskUser, "irreversible"},
+		{"both reasons ride along", 0.9, 0.9, core.Allow, core.AskUser, "secret material"},
 		{"an existing ask is not lowered", 0.0, 0.0, core.AskUser, core.AskUser, ""},
-		{"ask is raised to deny", 0.95, 0.0, core.AskUser, core.Deny, "outside what you asked for"},
-		{"at the threshold exactly does not fire", DefaultGateAsk, DefaultGateAsk, core.Allow, core.Allow, ""},
+		{"an existing deny is not asked about", 0.9, 0.9, core.Deny, core.Deny, ""},
+		{"at the thresholds exactly does not fire", DefaultIrreversibleAsk, DefaultSecretsAsk, core.Allow, core.Allow, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			j := &fakeJudge{answers: map[string]common.Answer{
-				scopeID("c1"):        noul(tt.scope),
 				irreversibleID("c1"): noul(tt.irrev),
+				secretsID("c1"):      noul(tt.secret),
 			}}
 			tcc := call("c1", "write")
 			tcc.Decision = tt.start
@@ -149,7 +152,7 @@ func TestGateFailsOpen(t *testing.T) {
 }
 
 func TestGateIgnoresAnswersForUnknownCalls(t *testing.T) {
-	j := &fakeJudge{answers: map[string]common.Answer{scopeID("other"): noul(0.99)}}
+	j := &fakeJudge{answers: map[string]common.Answer{irreversibleID("other"): noul(0.99)}}
 	tcc := call("c1", "write")
 	if err := newGateExt(j).OnToolBatch(context.Background(), []*core.ToolCallContext{tcc}); err != nil {
 		t.Fatalf("unexpected: %v", err)
@@ -334,5 +337,91 @@ func TestBreakerResetsOnSuccess(t *testing.T) {
 	_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c", "write")})
 	if len(j.reqs) != before+1 {
 		t.Fatal("a success must clear the failure count")
+	}
+}
+
+// A capture file gets one JSON line per batch with everything needed to
+// replay it: the state the model saw, the questions, and what it answered.
+func TestCaptureRecordsEachBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capture.jsonl")
+	j := &fakeJudge{answers: map[string]common.Answer{irreversibleID("c1"): noul(0.2), secretsID("c1"): noul(0.1)}}
+	ext := New(Config{Client: j, Advisor: AdvisorConfig{Disabled: true}, CaptureFile: path})
+	if err := ext.OnToolBatch(context.Background(), []*core.ToolCallContext{call("c1", "write")}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("capture not written: %v", err)
+	}
+	var rec struct {
+		Batch     string                   `json:"batch"`
+		State     map[string]any           `json:"state"`
+		Questions map[string]any           `json:"questions"`
+		Answers   map[string]common.Answer `json:"answers"`
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatalf("capture is not one JSON object per line: %v\n%s", err, data)
+	}
+	if rec.Batch != batchTools || rec.State["c1"] == nil || len(rec.Questions) != 2 || rec.Answers[irreversibleID("c1")].Noul != 0.2 {
+		t.Fatalf("capture incomplete: %+v", rec)
+	}
+}
+
+// The working-directory rule is a fact, not a judgment: it asks no question,
+// it fires even when the model is unreachable, and the temp directory is
+// exempt because scratch space is exactly where an agent should put things
+// that do not belong in the project.
+func TestWorkdirRuleAsksForPathsOutsideTheProject(t *testing.T) {
+	work := t.TempDir()
+	tests := []struct {
+		name     string
+		input    string
+		want     core.Decision
+		wantWord string
+	}{
+		{"inside the project runs", `{"file_path":"sub/x.go"}`, core.Allow, ""},
+		{"outside the project asks", `{"file_path":"/etc/hosts"}`, core.AskUser, "outside the working directory"},
+		{"the temp directory is exempt", `{"file_path":"` + filepath.Join(os.TempDir(), "elsewhere", "scratch.txt") + `"}`, core.Allow, ""},
+		{"read-only tools are not exempt", `{"file_path":"/etc/hosts"}`, core.AskUser, "outside the working directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A judge that is down: the rule must not depend on it.
+			ext := New(Config{Client: &fakeJudge{err: errors.New("down")}, WorkingDir: work, Advisor: AdvisorConfig{Disabled: true}})
+			ext.SetClassifier(func(string) bool { return true })
+			tcc := call("c1", "Read")
+			tcc.Call.Input = tt.input
+			if err := ext.OnToolBatch(context.Background(), []*core.ToolCallContext{tcc}); err != nil {
+				t.Fatalf("unexpected: %v", err)
+			}
+			if tcc.Decision != tt.want {
+				t.Fatalf("decision = %v, want %v (reason %q)", tcc.Decision, tt.want, tcc.Reason)
+			}
+			if tt.wantWord != "" && !strings.Contains(tcc.Reason, tt.wantWord) {
+				t.Fatalf("reason = %q, want it to mention %q", tcc.Reason, tt.wantWord)
+			}
+		})
+	}
+}
+
+// The rule's decision is reported even when the model batch failed, so a
+// prompt caused by the fact is never a mystery in the event stream.
+func TestWorkdirRuleReportsWhenTheModelIsDown(t *testing.T) {
+	c := &collector{}
+	ext := New(Config{Client: &fakeJudge{err: errors.New("down")}, WorkingDir: t.TempDir(), Advisor: AdvisorConfig{Disabled: true}})
+	ext.SetEmitter(c)
+	tcc := call("c1", "Read")
+	tcc.Call.Input = `{"file_path":"/etc/hosts"}`
+	_ = ext.OnToolBatch(context.Background(), []*core.ToolCallContext{tcc})
+	var saw bool
+	for _, ev := range c.events {
+		for _, d := range ev.(core.SystemOneDecisionEvent).Decisions {
+			if d.Question == factOutsideWorkdir && d.Action == "ask" {
+				saw = true
+			}
+		}
+	}
+	if !saw {
+		t.Fatalf("the rule's decision must be reported; events: %+v", c.events)
 	}
 }

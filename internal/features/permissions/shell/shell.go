@@ -82,11 +82,15 @@ func ParseClass(s string) (Class, error) {
 }
 
 // Arg is one word of a simple command after static evaluation. Static is
-// false when the word depends on runtime state ($VAR, $(cmd), globs, brace
-// expansion) — Value is then "".
+// false when the word depends on runtime state ($VAR, $(cmd), arithmetic) —
+// Value is then "". Glob characters stay literal: `*.pem` is static.
 type Arg struct {
 	Value  string
 	Static bool
+	// Template is set for a non-static word whose only expansions are plain
+	// parameters: `$HOME/.ssh` reads "${HOME}/.ssh", ready for os.Expand. A
+	// word with any other expansion ($(…), ${a:-b}, $((…))) has none.
+	Template string
 }
 
 // Segment is one simple command found in the command line.
@@ -96,9 +100,14 @@ type Segment struct {
 	Text string
 	// Raw is the same WITH assignments — deny globs additionally match it,
 	// so a rule like "LD_PRELOAD=*" can target the assignment itself.
-	Raw   string
-	Argv  []Arg
-	Class Class
+	Raw  string
+	Argv []Arg
+	// Redirects are the file targets of the command's redirects, input and
+	// output alike (`> out`, `< in`, `&>> log`), evaluated like Argv.
+	// Descriptor duplications, /dev sinks and here-doc delimiters are left
+	// out.
+	Redirects []Arg
+	Class     Class
 	// Why explains the classification, one reason per contribution.
 	Why []string
 	// Depth is 0 at top level and grows by one for each $(…), `…`, <(…),

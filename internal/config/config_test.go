@@ -211,8 +211,8 @@ func TestLoad_Errors(t *testing.T) {
 		{"systemone_model undeclared", soJevYAML + "systemone_model: nope\n", "not declared under models.systemone"},
 		{"systemone_model names a chat model", soJevYAML + "systemone_model: chat\n", "is a chat model"},
 		{"negative recent_messages", soJevYAML + "systemone_model: jev\nsystemone:\n  recent_messages: -1\n", "recent_messages must be >= 0"},
-		{"ask_above out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  gate:\n    ask_above: 1.5\n", "gate.ask_above must be between 0 and 1"},
-		{"deny_above out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  gate:\n    deny_above: -0.1\n", "gate.deny_above must be between 0 and 1"},
+		{"irreversible_ask out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  gate:\n    irreversible_ask: 1.5\n", "gate.irreversible_ask must be between 0 and 1"},
+		{"secrets_ask out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  gate:\n    secrets_ask: -0.1\n", "gate.secrets_ask must be between 0 and 1"},
 		{"consult_above out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  advisor:\n    consult_above: 2\n", "advisor.consult_above must be between 0 and 1"},
 		{"min_confidence out of range", soJevYAML + "systemone_model: jev\nsystemone:\n  routing:\n    min_confidence: 9\n", "routing.min_confidence must be between 0 and 1"},
 		{"routing on with nothing to choose", soJevYAML + "systemone_model: jev\nsystemone:\n  routing:\n    enabled: true\n", "at least two models.llm: entries with a description"},
@@ -424,8 +424,8 @@ systemone:
   recent_messages: 0
   gate:
     enabled: true
-    ask_above: 0.55
-    deny_above: 0.95
+    irreversible_ask: 0.35
+    secrets_ask: 0.55
   advisor:
     enabled: false
     consult_above: 0.8
@@ -474,8 +474,8 @@ models:
 	if so.Advisor.Enabled == nil || *so.Advisor.Enabled {
 		t.Fatalf("advisor.enabled = %v, want a set false", so.Advisor.Enabled)
 	}
-	if so.Gate.AskAbove == nil || *so.Gate.AskAbove != 0.55 || so.Gate.DenyAbove == nil || *so.Gate.DenyAbove != 0.95 {
-		t.Fatalf("gate thresholds = %v/%v", so.Gate.AskAbove, so.Gate.DenyAbove)
+	if so.Gate.IrreversibleAsk == nil || *so.Gate.IrreversibleAsk != 0.35 || so.Gate.SecretsAsk == nil || *so.Gate.SecretsAsk != 0.55 {
+		t.Fatalf("gate thresholds = %v/%v", so.Gate.IrreversibleAsk, so.Gate.SecretsAsk)
 	}
 	if so.Advisor.ConsultAbove == nil || *so.Advisor.ConsultAbove != 0.8 {
 		t.Fatalf("consult_above = %v", so.Advisor.ConsultAbove)

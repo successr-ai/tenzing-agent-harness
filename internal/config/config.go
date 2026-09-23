@@ -171,18 +171,17 @@ type SystemOneSection struct {
 	Routing SystemOneRouting `yaml:"routing"`
 }
 
-// SystemOneGate tunes tool gating. The thresholds are probabilities the
-// model's answers are read against; each is validated here for range only,
-// because the defaults they combine with live with the question wording they
-// were calibrated for (internal/features/systemone). Setting ask_above above
-// the effective deny_above is legal and simply means calls are denied rather
-// than questioned.
+// SystemOneGate tunes tool gating. The gate escalates a call to an approval
+// prompt for any of three reasons: it reaches outside the working directory
+// (a computed fact, no threshold), it is judged to destroy unrecoverable
+// work, or it is judged to touch secret material. The two thresholds are
+// probabilities the model's answers are read against; each is validated here
+// for range only, because the defaults live with the question wording they
+// were calibrated for (internal/features/systemone).
 type SystemOneGate struct {
-	Enabled *bool `yaml:"enabled"`
-	// AskAbove escalates a call to an approval prompt; DenyAbove refuses it
-	// outright.
-	AskAbove  *float64 `yaml:"ask_above"`
-	DenyAbove *float64 `yaml:"deny_above"`
+	Enabled         *bool    `yaml:"enabled"`
+	IrreversibleAsk *float64 `yaml:"irreversible_ask"`
+	SecretsAsk      *float64 `yaml:"secrets_ask"`
 }
 
 // SystemOneAdvisor tunes the advisor-need judgment. Turn it off where the
@@ -552,8 +551,8 @@ func (f File) validateSystemOne(systemOnes, declared map[string]bool) error {
 		key   string
 		value *float64
 	}{
-		{"systemone.gate.ask_above", f.SystemOne.Gate.AskAbove},
-		{"systemone.gate.deny_above", f.SystemOne.Gate.DenyAbove},
+		{"systemone.gate.irreversible_ask", f.SystemOne.Gate.IrreversibleAsk},
+		{"systemone.gate.secrets_ask", f.SystemOne.Gate.SecretsAsk},
 		{"systemone.advisor.consult_above", f.SystemOne.Advisor.ConsultAbove},
 		{"systemone.routing.min_confidence", f.SystemOne.Routing.MinConfidence},
 	}

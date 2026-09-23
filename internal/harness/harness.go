@@ -21,6 +21,7 @@ import (
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/builtins"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/mcp"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
+	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions/shell"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/prompts"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/reminders"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/skills"
@@ -205,13 +206,19 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		})
 		defaultExts = append(defaultExts, advisorGate)
 	}
-	// The decision model runs last among the gating extensions, so its
-	// questions see every earlier decision and can only tighten them. Its
-	// four dependencies are late-bound below, for the same reason the
+	// The decision model's gate is a batch hook, so the loop runs it before
+	// every per-call hook (permissions, the advisor gate) whatever the
+	// registration order; the loop keeps the strictest decision, so none of
+	// them can lower another's. Its four dependencies are late-bound below, for the same reason the
 	// advisor gate's classifier is.
 	var soExt *systemone.Ext
 	if o.systemOne != nil {
-		if soExt = systemone.New(*o.systemOne); soExt != nil {
+		// The harness knows where it was started; the caller need not say.
+		soCfg := *o.systemOne
+		if soCfg.WorkingDir == "" {
+			soCfg.WorkingDir = cwd
+		}
+		if soExt = systemone.New(soCfg); soExt != nil {
 			defaultExts = append(defaultExts, soExt)
 		}
 	}
@@ -233,6 +240,12 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		}
 		if gateExt != nil {
 			childExtras = append(childExtras, gateExt)
+		}
+		// Children touch the same filesystem, so they meet the same
+		// decision-model gate — the gate only, not the main turn's advisor
+		// and routing state.
+		if soExt != nil {
+			childExtras = append(childExtras, soExt.ChildGate())
 		}
 		subagentFactory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
 			AgentLLM:        subagentLLM,
@@ -408,6 +421,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		soExt.SetClassifier(composite.ReadOnly)
 		soExt.SetEmitter(o.eventBus)
 		soExt.SetMessages(mainStore.Messages)
+		soExt.SetShellSplitter(shellWords)
 	}
 
 	// create agent runner
@@ -481,6 +495,55 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	}
 
 	return h, nil
+}
+
+// shellWords splits a bash command line into its literal words, for the
+// System One extension's path facts. It bridges two features the layer rules
+// keep apart: permissions/shell owns the parser, and systemone may not import
+// another feature, so the harness — which knows both — passes the capability
+// in. Words that depend on runtime state ($VAR, $(…), globs) are dropped
+// rather than guessed at, and an unparseable line yields nothing.
+func shellWords(command string) []string {
+	// The builtin table only drives classification, which this caller
+	// ignores — it wants the words, and those come from the parse.
+	analysis := shell.Analyze(command, shell.Builtin())
+	if analysis.Err != nil {
+		return nil
+	}
+	var words []string
+	for _, seg := range analysis.Segments {
+		for _, arg := range append(seg.Argv, seg.Redirects...) {
+			if w := shellWord(arg); w != "" {
+				words = append(words, w)
+			}
+		}
+	}
+	return words
+}
+
+// shellWord is an argument as the gate should see it: literal words as
+// written, and `$HOME/.ssh`-style words expanded from this process's
+// environment — the one the bash tool inherits. A variable that is unset
+// here drops the word rather than guessing at it.
+// ponytail: an assignment earlier in the same line (`D=/etc; cat $D`) is not
+// seen; the word resolves against the inherited environment or not at all.
+func shellWord(arg shell.Arg) string {
+	if arg.Static {
+		return arg.Value
+	}
+	if arg.Template == "" {
+		return ""
+	}
+	unset := false
+	w := os.Expand(arg.Template, func(name string) string {
+		v, ok := os.LookupEnv(name)
+		unset = unset || !ok
+		return v
+	})
+	if unset {
+		return ""
+	}
+	return w
 }
 
 // errBusy is returned by between-turns operations invoked mid-turn.
