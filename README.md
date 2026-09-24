@@ -163,6 +163,7 @@ go run ./cmd/app -p "ephemeral" --no-session
 
 # Prompt/behavior controls
 go run ./cmd/app -p "..." --system prompt.md      # file replaces the system prompt
+go run ./cmd/app -p "..." --system-prompt "Be terse."  # string replaces the system prompt; wins over --system
 go run ./cmd/app -p "..." --thinking=false        # toggle model reasoning
 go run ./cmd/app -p "..." --no-context-files      # skip AGENTS.md loading
 go run ./cmd/app -p "..." --trust                 # load ./SYSTEM.md etc. this run
@@ -206,6 +207,7 @@ no_session: false
 no_context_files: false
 
 system_file: ""                        # file replacing the system prompt (--system); relative to this file
+system_prompt: ""                      # text replacing the system prompt (--system-prompt); wins over system_file
 
 port: 8080                             # serve mode
 nexus_config: nexus.yaml
@@ -284,7 +286,8 @@ Every key, with its CLI/env equivalent (which override the file). Durations are 
 | `thinking` | bool | provider default | `--thinking` | Model reasoning on/off. |
 | `no_session` | bool | `false` | `--no-session` | Disable session persistence. |
 | `no_context_files` | bool | `false` | `--no-context-files` | Skip AGENTS.md context-file loading. |
-| `system_file` | path | unset | `--system` | File whose contents replace the system prompt. Relative paths resolve against the config file's directory. |
+| `system_file` | path | unset | `--system` | File whose contents replace the system prompt. Relative paths resolve against the config file's directory. Ignored when `system_prompt` is set. |
+| `system_prompt` | string | unset | `--system-prompt` | Text that replaces the system prompt; wins over `system_file`. The two keys are one setting: passing either `--system` or `--system-prompt` overrides both. |
 | `port` | int | `8080` | `--port`, `SERVER_PORT` | Serve-mode listen port. |
 | `nexus_config` | path | `nexus.yaml` | `--nexus-config`, `NEXUS_CONFIG` | Nexus channel config path. |
 | `debug` | bool | `false` | `--debug`, `LOG_DEBUG` | Trace-level logging to a fresh log file in `<UserConfigDir>/tenzing/log/`. |

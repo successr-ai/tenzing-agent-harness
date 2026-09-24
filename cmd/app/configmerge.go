@@ -110,7 +110,13 @@ func mergeConfigFile(cfg *cliConfig, f cfgfile.File, changed func(name string) b
 	setStr("blackboard-model", &cfg.BlackboardModel, f.BlackboardModel)
 	setStr("advisor-model", &cfg.AdvisorModel, f.AdvisorModel)
 	setStr("systemone-model", &cfg.SystemOneModel, f.SystemOneModel)
-	setStr("system", &cfg.SystemFile, f.SystemFile)
+	// One setting, two spellings: a flag for either suppresses both file
+	// keys, so a file string can't override a CLI --system. Within the file,
+	// system_prompt beats system_file downstream in harnessOptions.
+	if !changed("system") && !changed("system-prompt") {
+		setStr("system", &cfg.SystemFile, f.SystemFile)
+		setStr("system-prompt", &cfg.SystemPrompt, f.SystemPrompt)
+	}
 
 	if f.AdvisorNudge != 0 && !changed("advisor-nudge") {
 		cfg.AdvisorNudge = f.AdvisorNudge

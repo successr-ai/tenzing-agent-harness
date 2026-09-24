@@ -68,7 +68,8 @@ type File struct {
 	NoSession       bool      `yaml:"no_session"`
 	NoContextFiles  bool      `yaml:"no_context_files"`
 
-	SystemFile string `yaml:"system_file"`
+	SystemFile   string `yaml:"system_file"`
+	SystemPrompt string `yaml:"system_prompt"` // wins over SystemFile
 
 	Port        *int   `yaml:"port"`
 	NexusConfig string `yaml:"nexus_config"`

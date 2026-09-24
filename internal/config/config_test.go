@@ -39,6 +39,7 @@ thinking: false
 no_session: true
 no_context_files: true
 system_file: sys.md
+system_prompt: be terse
 port: 9090
 nexus_config: nx.yaml
 debug: true
@@ -99,6 +100,9 @@ models:
 	}
 	if f.Port == nil || *f.Port != 9090 || f.NexusConfig != "nx.yaml" {
 		t.Errorf("serve fields wrong: %+v", f)
+	}
+	if f.SystemPrompt != "be terse" {
+		t.Errorf("SystemPrompt = %q", f.SystemPrompt)
 	}
 	if f.SystemFile != "sys.md" {
 		t.Errorf("path fields wrong: %+v", f)

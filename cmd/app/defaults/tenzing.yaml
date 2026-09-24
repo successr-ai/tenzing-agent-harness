@@ -40,6 +40,8 @@ permissions:
 # Global system prompt, resolved relative to THIS file (~/.config/tenzing/SYSTEM.md).
 # Uncomment once SYSTEM.md exists. Note: it REPLACES the built-in prompt entirely.
 system_file: SYSTEM_PROMPT.md
+# Or give the prompt inline; it wins over system_file when both are set.
+# system_prompt: "You are a terse, careful coding agent."
 
 # A provider is one backend: a wire protocol (type) plus the endpoint and
 # key to reach it. name is a free label — declare the same type twice to

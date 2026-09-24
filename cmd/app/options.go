@@ -68,6 +68,7 @@ type cliConfig struct {
 
 	// prompt / sessions / trust
 	SystemFile     string // file whose contents replace the system prompt
+	SystemPrompt   string // literal system prompt; wins over SystemFile
 	Resume         string // conversation ID to resume
 	ContinueLatest bool   // resume the latest session for cwd
 	Trust          bool   // one-shot: treat cwd as trusted for this run
@@ -219,12 +220,16 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 		opts = append(opts, harness.WithContextFilesDisabled())
 	}
 
-	if cfg.SystemFile != "" {
+	prompt := cfg.SystemPrompt
+	if prompt == "" && cfg.SystemFile != "" {
 		data, err := os.ReadFile(cfg.SystemFile)
 		if err != nil {
 			return nil, fmt.Errorf("--system: read system prompt file: %w", err)
 		}
-		opts = append(opts, harness.WithSystemPrompt(strings.TrimSpace(string(data))))
+		prompt = string(data)
+	}
+	if prompt = strings.TrimSpace(prompt); prompt != "" {
+		opts = append(opts, harness.WithSystemPrompt(prompt))
 	}
 
 	if cfg.ConversationID != "" {

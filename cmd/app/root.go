@@ -182,6 +182,7 @@ func newRootCmd() *cobra.Command {
 	fl.BoolVar(&cfg.NoContextFiles, "no-context-files", false, "skip AGENTS.md context-file loading")
 
 	fl.StringVar(&cfg.SystemFile, "system", "", "file whose contents replace the system prompt")
+	fl.StringVar(&cfg.SystemPrompt, "system-prompt", "", "text that replaces the system prompt (wins over --system)")
 	fl.StringVar(&cfg.Resume, "resume", "", "resume the conversation with this ID (see GET /sessions or the session filenames)")
 	fl.BoolVarP(&cfg.ContinueLatest, "continue", "c", false, "continue the most recent conversation for this directory")
 	fl.BoolVar(&cfg.Trust, "trust", false, "treat the working directory as trusted for this run (loads ./SYSTEM.md, ./APPEND_SYSTEM.md, ./.tenzing/prompts); not persisted")

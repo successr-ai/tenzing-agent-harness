@@ -468,6 +468,31 @@ func TestMergeConfigFile(t *testing.T) {
 		}
 	})
 
+	// The two system-prompt keys are one setting: a flag for either beats
+	// both file keys, so a yaml string can't override a CLI --system.
+	t.Run("system prompt precedence", func(t *testing.T) {
+		file := cfgfile.File{SystemPrompt: "file text", SystemFile: "file.md"}
+		tests := []struct {
+			name               string
+			cfg                cliConfig
+			changed            string
+			wantText, wantFile string
+		}{
+			{"file keys fill unset", cliConfig{}, "", "file text", "file.md"},
+			{"--system beats both", cliConfig{SystemFile: "flag.md"}, "system", "", "flag.md"},
+			{"--system-prompt beats both", cliConfig{SystemPrompt: "flag text"}, "system-prompt", "flag text", ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				cfg := tt.cfg
+				mergeConfigFile(&cfg, file, func(name string) bool { return name == tt.changed }, presentNone)
+				if cfg.SystemPrompt != tt.wantText || cfg.SystemFile != tt.wantFile {
+					t.Errorf("got prompt=%q file=%q, want %q %q", cfg.SystemPrompt, cfg.SystemFile, tt.wantText, tt.wantFile)
+				}
+			})
+		}
+	})
+
 	t.Run("omitted file keys leave defaults", func(t *testing.T) {
 		cfg := &cliConfig{Port: 8080, SubagentDepth: 1}
 		mergeConfigFile(cfg, cfgfile.File{}, changedNone, presentNone)

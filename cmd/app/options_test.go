@@ -111,6 +111,31 @@ func TestHarnessOptionsSystemFile(t *testing.T) {
 	}
 }
 
+func TestHarnessOptionsSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      cliConfig
+		wantOpts int
+	}{
+		{"string only", cliConfig{SystemPrompt: "be terse"}, 1},
+		// string wins: the (missing) file is never read, so no error
+		{"string beats file", cliConfig{SystemPrompt: "be terse", SystemFile: "/definitely/not/here.md"}, 1},
+		{"whitespace only", cliConfig{SystemPrompt: "  \n"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.deps = testDeps(t)
+			opts, err := harnessOptions(&tt.cfg)
+			if err != nil {
+				t.Fatalf("harnessOptions: %v", err)
+			}
+			if len(opts) != tt.wantOpts {
+				t.Errorf("options = %d, want %d", len(opts), tt.wantOpts)
+			}
+		})
+	}
+}
+
 func TestHarnessOptionsContinueLatest(t *testing.T) {
 	dir := t.TempDir()
 	cwd := t.TempDir()
