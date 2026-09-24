@@ -46,7 +46,8 @@ After `welcome`, the agent is registered; the plane MAY send commands at any tim
 | Type | Fields | When |
 |------|--------|------|
 | `event` | `{turn_id, envelope}` | Every harness event of the running turn. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). Includes `thinking_delta` (`data.text`: one streamed chunk of reasoning); `text_delta` is not sent — answer text arrives in `llm.response`. |
-| `approval_request` | `{turn_id, id, tool, input}` | A mutating tool call needs approval. The turn blocks until `approve` or cancellation/timeout. |
+| `approval_request` | `{turn_id, id, tool, input}` | A mutating tool call needs approval. The turn blocks until `approve` or cancellation/timeout. Sent only when `approval_timeout` > 0 (connect mode's default is 0: deny immediately, nothing sent). |
+| `input_request` | `{turn_id, id, question}` | The agent called `ask_user`. The turn blocks until `answer` quoting `id` arrives, or the turn is cancelled; the answer is the tool's result. |
 | `result` | `{turn_id, id, outcome, answer?, error?, denied_tools, files_touched?}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
 | `shutdown_ack` | `{id}` | Reply to `shutdown`, after the running turn's `result` (if any). The agent closes the connection normally and exits 0 right after. |
 
@@ -65,6 +66,7 @@ the plane reads the sandbox for content.
 | `steer` | `{id, message}` | Inject mid-turn steering. Acknowledged by an `event` (SteeringInjected) — no dedicated reply. |
 | `cancel` | `{id}` | Cancel the running turn (and drop queued ones). The turn ends with `result{outcome:"cancelled"}`. |
 | `approve` | `{id, call_id, approved, glob?, scope?}` | Answer a pending `approval_request`. `glob` adds a bash allow rule when `approved`. `scope` is `"always"` (default) or `"session"`. `session` keeps the glob **in memory for the process lifetime**. `always` persists it to settings.json in serve-mode parity — except that connect mode's default `connect.ephemeral_grants: true` still keeps it in memory; set it to `false` to persist. |
+| `answer` | `{id, request_id, text}` | Answer a pending `input_request` (`request_id` is its `id`). An answer for a request whose turn has ended is dropped. |
 | `set-model` | `{id, model}` | Switch the main model (same validation as POST /model). Errors: `{type:"error", id, detail}`. |
 | `set-thinking` | `{id, enabled}` | Toggle reasoning. |
 | `shutdown` | `{id}` | Graceful teardown: cancel the running turn (it reports `result{outcome:"cancelled"}`) and drop queued ones, then reply `shutdown_ack{id}`, close normally, and exit 0. The agent does not reconnect. |

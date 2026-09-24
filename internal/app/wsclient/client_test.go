@@ -389,3 +389,63 @@ func TestUnexpectedAgentRefusalIsFatal(t *testing.T) {
 		t.Errorf("connections = %d, want 1: a refusal must not be retried", p.connections)
 	}
 }
+
+// TestAnswerReachesHandler: the plane's `answer` to an input_request is
+// handed to the Answer handler with the request it replies to.
+func TestAnswerReachesHandler(t *testing.T) {
+	p := newPlaneDouble(t).withScript(func(pc *planeConn) {
+		pc.send(Answer{Type: "answer", ID: "c1", RequestID: "ask-7", Text: "only never-listed drafts"})
+		<-pc.ctx.Done()
+	})
+	var mu sync.Mutex
+	var gotID, gotText string
+	h, _ := handlersFor(t)
+	h.Answer = func(requestID, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotID, gotText = requestID, text
+	}
+	c := newTestClient(t, p, h, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runClient(ctx, c)
+
+	waitFor(t, "answer handled", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotID == "ask-7" && gotText == "only never-listed drafts"
+	})
+}
+
+// TestInputAndApprovalRequestsReachThePlane: the two agent→plane requests
+// a turn can block on go out as their own frames, tagged with the turn.
+func TestInputAndApprovalRequestsReachThePlane(t *testing.T) {
+	got := make(chan map[string]any, 2)
+	ready := make(chan struct{})
+	p := newPlaneDouble(t).withScript(func(pc *planeConn) {
+		close(ready) // handshake done: the client has a live connection
+		for i := 0; i < 2; i++ {
+			var m map[string]any
+			pc.read(testT(t), &m)
+			got <- m
+		}
+		<-pc.ctx.Done()
+	})
+	h, _ := handlersFor(t)
+	c := newTestClient(t, p, h, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runClient(ctx, c)
+	<-ready
+
+	c.RequestInput("q1", "ask-1", "Which drafts?")
+	c.RequestApproval("q1", "call-1", "bash", `{"command":"rm x"}`)
+
+	first, second := <-got, <-got
+	if first["type"] != "input_request" || first["id"] != "ask-1" || first["turn_id"] != "q1" || first["question"] != "Which drafts?" {
+		t.Errorf("input frame = %v", first)
+	}
+	if second["type"] != "approval_request" || second["id"] != "call-1" || second["tool"] != "bash" || second["turn_id"] != "q1" {
+		t.Errorf("approval frame = %v", second)
+	}
+}

@@ -149,6 +149,26 @@ type ApprovalRequest struct {
 	Input string `json:"input"`
 }
 
+// InputRequest asks the plane's user a question on the agent's behalf —
+// the ask_user tool. The turn blocks until the plane answers it.
+type InputRequest struct {
+	Type string `json:"type"` // "input_request"
+	// TurnID is the correlation id of the query that started the turn.
+	TurnID string `json:"turn_id"`
+	// ID is the request id the plane echoes back on answer.
+	ID       string `json:"id"`
+	Question string `json:"question"`
+}
+
+// Answer is the user's reply to an InputRequest.
+type Answer struct {
+	Type string `json:"type"` // "answer"
+	ID   string `json:"id,omitempty"`
+	// RequestID quotes the InputRequest being answered.
+	RequestID string `json:"request_id"`
+	Text      string `json:"text"`
+}
+
 // Result reports the end of a turn. Exactly one per accepted query. `id` is
 // the correlation id of the query that started the turn.
 type Result struct {
@@ -186,6 +206,12 @@ func decode(raw []byte) (any, error) {
 		return nil, err
 	}
 	switch probe.Type {
+	case "answer":
+		var m Answer
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return &m, nil
 	case "error":
 		var m Error
 		if err := json.Unmarshal(raw, &m); err != nil {

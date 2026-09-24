@@ -66,6 +66,13 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 	// same handler), so they go upstream directly, tagged like bus events.
 	// client is assigned below; deltas only flow during a turn, after Run.
 	var client *wsclient.Client
+	// ask_user reaches the plane's user; its answer arrives via Answer.
+	ask := newAskUserTool(func(id, question string) {
+		if client != nil {
+			client.RequestInput(client.Running(), id, question)
+		}
+	})
+	opts = append(opts, harness.WithTool(ask))
 	opts = append(opts, harness.WithThinkingDeltaHandler(func(runnerID, text string) {
 		if client == nil {
 			return
@@ -124,6 +131,7 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		Approve: func(callID string, approved bool, glob, scope string) {
 			connectApprove(cfg.BashAllow, registry, cfg.ConnectEphemeralGrants || scope == "session", callID, approved, glob)
 		},
+		Answer:         ask.answer,
 		SetModel:       func(ref string) error { return setConnectModel(cfg, ref, h) },
 		SetThinking:    h.SetThinking,
 		CurrentModel:   h.GetCurrentModel,
@@ -331,6 +339,13 @@ func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsc
 				return
 			}
 			observeConnectEvent(ev, registry, subagents, stats)
+			// An escalated call waits on the plane's decision, so the plane
+			// has to be asked: the event envelope below only narrates it.
+			if a, ok := ev.(core.ApprovalRequestedEvent); ok {
+				if turn := client.Running(); turn != "" {
+					client.RequestApproval(turn, a.CallID, a.ToolName, a.Input)
+				}
+			}
 			env := wire.ToWire(ev)
 			payload, err := json.Marshal(env)
 			if err != nil {

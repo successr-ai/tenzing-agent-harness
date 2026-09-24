@@ -68,6 +68,9 @@ type Handlers struct {
 	// ConversationID reports the harness's active conversation id for hello;
 	// "" (or nil) omits the field. Optional.
 	ConversationID func() string
+	// Answer delivers the user's reply to an input_request (the ask_user
+	// tool). Optional: without it an answer is logged and dropped.
+	Answer func(requestID, text string)
 	// OnDisconnect fires once per connection loss, after the in-flight
 	// turn has been cancelled. Optional.
 	OnDisconnect func()
@@ -203,6 +206,18 @@ func (c *Client) SendEvent(ctx context.Context, turnID string, envelope json.Raw
 	case <-ctx.Done():
 		slog.Warn("wsclient: dropping event; connection gone", "turn", turnID)
 	}
+}
+
+// RequestApproval asks the plane to decide an escalated tool call. The
+// call waits on the harness side until the plane's approve arrives.
+func (c *Client) RequestApproval(turnID, callID, tool, input string) {
+	c.send(c.ConnContext(), ApprovalRequest{Type: "approval_request", TurnID: turnID, ID: callID, Tool: tool, Input: input})
+}
+
+// RequestInput asks the plane's user a question; the plane's answer comes
+// back through Handlers.Answer quoting id.
+func (c *Client) RequestInput(turnID, id, question string) {
+	c.send(c.ConnContext(), InputRequest{Type: "input_request", TurnID: turnID, ID: id, Question: question})
 }
 
 // Running reports the correlation id of the running turn, "" when idle.
@@ -508,6 +523,12 @@ func (c *Client) dispatch(ctx context.Context, msg any) {
 		}
 	case *Shutdown:
 		c.shutdown(*m)
+	case *Answer:
+		if c.h.Answer == nil {
+			slog.Warn("wsclient: answer with no handler", "request_id", m.RequestID)
+			return
+		}
+		c.h.Answer(m.RequestID, m.Text)
 	case *Error:
 		// Any other plane error is advisory; the connection carries on.
 		slog.Warn("wsclient: control plane error", "code", m.Code, "detail", m.Detail)
