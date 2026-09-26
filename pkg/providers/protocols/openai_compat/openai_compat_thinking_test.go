@@ -12,6 +12,7 @@ import (
 )
 
 func int64Ptr(v int64) *int64 { return &v }
+func boolPtr(v bool) *bool    { return &v }
 
 func TestOpenAICompat_ThinkingBudgetMapsToReasoningEffort(t *testing.T) {
 	tests := []struct {
@@ -65,19 +66,24 @@ func TestOpenAICompat_ThinkingBudgetMapsToReasoningEffort(t *testing.T) {
 	}
 }
 
-// TestOpenAICompat_BudgetOverridesReasoningEffort pins the precedence: a
-// request ThinkingBudget's tier beats the client's configured effort; the
+// TestOpenAICompat_BudgetOverridesReasoningEffort pins the precedence: an
+// explicit Think=false sends "none" over everything; otherwise a request
+// ThinkingBudget's tier beats the client's configured effort; the
 // configured effort applies only to requests without a budget.
 func TestOpenAICompat_BudgetOverridesReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name       string
 		effort     string
+		think      *bool
 		budget     *int64
 		wantEffort string
 	}{
-		{"configured effort with no budget", "low", nil, "low"},
-		{"budget tier beats the configured effort", "max", int64Ptr(100000), "high"},
-		{"empty effort falls back to the budget tier", "", int64Ptr(1024), "low"},
+		{"configured effort with no budget", "low", nil, nil, "low"},
+		{"budget tier beats the configured effort", "max", nil, int64Ptr(100000), "high"},
+		{"empty effort falls back to the budget tier", "", nil, int64Ptr(1024), "low"},
+		{"think false beats budget and effort", "high", boolPtr(false), int64Ptr(100000), "none"},
+		{"think false alone sends none", "", boolPtr(false), nil, "none"},
+		{"think true keeps the configured effort", "low", boolPtr(true), nil, "low"},
 	}
 
 	for _, tt := range tests {
@@ -93,6 +99,7 @@ func TestOpenAICompat_BudgetOverridesReasoningEffort(t *testing.T) {
 			_, err := compat.SendSyncMessage(context.Background(), common.CompletionRequest{
 				Model:          "test-model",
 				Messages:       []common.Message{common.NewUserMessage("hi")},
+				Think:          tt.think,
 				ThinkingBudget: tt.budget,
 			})
 			if err != nil {
