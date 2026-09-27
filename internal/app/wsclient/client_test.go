@@ -314,11 +314,17 @@ func TestEventAndResultShapes(t *testing.T) {
 	if json.Unmarshal(b, &m) != nil || m["type"] != "event" || m["id"] != "q1" {
 		t.Errorf("event JSON = %s, want {type:event,id:q1,...}", b)
 	}
+	if _, present := m["turn_id"]; present {
+		t.Errorf("event carries the turn as id, not turn_id: %s", b)
+	}
 	b, _ = json.Marshal(Result{Type: "result", ID: "q1", Outcome: "cancelled_disconnect"})
 	m = nil
 	_ = json.Unmarshal(b, &m)
 	if m["outcome"] != "cancelled_disconnect" {
 		t.Errorf("result outcome = %v", m["outcome"])
+	}
+	if _, present := m["turn_id"]; m["id"] != "q1" || present {
+		t.Errorf("result JSON = %s, want the turn as id and no turn_id", b)
 	}
 	if _, present := m["files_touched"]; present {
 		t.Errorf("empty files_touched must be omitted, got %s", b)
@@ -437,6 +443,9 @@ func TestInputAndApprovalRequestsReachThePlane(t *testing.T) {
 	defer cancel()
 	runClient(ctx, c)
 	<-ready
+	c.mu.Lock()
+	c.currentID = "q1" // requests only flow for the running turn
+	c.mu.Unlock()
 
 	c.RequestInput("q1", "ask-1", "Which drafts?")
 	c.RequestApproval("q1", "call-1", "bash", `{"command":"rm x"}`)
@@ -447,5 +456,45 @@ func TestInputAndApprovalRequestsReachThePlane(t *testing.T) {
 	}
 	if second["type"] != "approval_request" || second["id"] != "call-1" || second["tool"] != "bash" || second["turn_id"] != "q1" {
 		t.Errorf("approval frame = %v", second)
+	}
+}
+
+// TestDisconnectDropsConnection: Disconnect ends the live connection from
+// the agent side and takes the normal disconnect path — the running turn
+// is cancelled as cancelled_disconnect, and the client reconnects and
+// reports it in the next hello.
+func TestDisconnectDropsConnection(t *testing.T) {
+	p := newPlaneDouble(t)
+	p.withScript(func(pc *planeConn) {
+		p.mu.Lock()
+		first := p.connections == 1
+		p.mu.Unlock()
+		if first {
+			pc.send(Query{Type: "query", ID: "q1", Query: "doomed"})
+		}
+		for {
+			if _, _, err := pc.conn.Read(pc.ctx); err != nil {
+				return
+			}
+		}
+	})
+	h, _ := handlersFor(t)
+	c := newTestClient(t, p, h, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runClient(ctx, c)
+
+	waitFor(t, "q1 running", func() bool { return c.Running() == "q1" })
+	c.Disconnect("test")
+	waitFor(t, "reconnect", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.connections == 2
+	})
+	p.mu.Lock()
+	lt := p.hello.LastTurn
+	p.mu.Unlock()
+	if lt == nil || lt.ID != "q1" || lt.Outcome != "cancelled_disconnect" {
+		t.Errorf("reconnect hello last_turn = %+v, want q1/cancelled_disconnect", lt)
 	}
 }

@@ -250,8 +250,8 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 	return nil
 }
 
-// eventQueue is an unbounded FIFO decoupling bus delivery from stdout
-// writes: push never blocks, pop blocks until an event arrives or the
+// eventQueue is an unbounded FIFO decoupling bus delivery from a slow
+// consumer (stdout here, the control plane in connect.go): push never blocks, pop blocks until an event arrives or the
 // queue is closed and drained. Memory is bounded by one turn's event
 // backlog. // ponytail: in-memory only; disk-spilling queue if RPC-mode
 // turns ever produce more backlog than RAM comfortably holds.
@@ -282,6 +282,22 @@ func (q *eventQueue) close() {
 	q.closed = true
 	q.mu.Unlock()
 	q.cond.Broadcast()
+}
+
+// len reports how many events are waiting.
+func (q *eventQueue) len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.events)
+}
+
+// drain removes and returns every waiting event.
+func (q *eventQueue) drain() []core.Event {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	evs := q.events
+	q.events = nil
+	return evs
 }
 
 // pop blocks until an event is available or the queue is closed and fully

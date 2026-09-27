@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,11 @@ func (e *FatalError) Unwrap() error { return e.Err }
 
 // maxBackoff caps the reconnect delay.
 const maxBackoff = 30 * time.Second
+
+// teardownWait bounds how long a reconnect waits for the cancelled turn to
+// record its outcome for hello.last_turn; a turn that ignores cancellation
+// must not keep the agent offline.
+const teardownWait = 5 * time.Second
 
 // TurnReport is what RunTurn hands back: the material for the Result message.
 type TurnReport struct {
@@ -53,8 +59,6 @@ type Handlers struct {
 	RunTurn func(ctx context.Context, cmd *Query) TurnReport
 	// Steer injects mid-turn input.
 	Steer func(message string) error
-	// Cancel stops the running turn (and drops queued ones).
-	Cancel func()
 	// Approve answers a pending approval call.
 	Approve func(callID string, approved bool, glob, scope string)
 	// SetModel switches the main model; error feeds back to the plane.
@@ -74,9 +78,6 @@ type Handlers struct {
 	// OnDisconnect fires once per connection loss, after the in-flight
 	// turn has been cancelled. Optional.
 	OnDisconnect func()
-	// OnReconnect fires after a successful handshake on a new connection.
-	// Optional.
-	OnReconnect func()
 }
 
 // Options configures a Client.
@@ -106,8 +107,10 @@ type Client struct {
 	mu         sync.Mutex
 	cancelTurn context.CancelFunc // non-nil while a turn is running
 	currentID  string             // correlation id of the running turn
-	connLost   chan struct{}      // closed by cancelInFlight; per-turn watcher
+	connLost   chan struct{}      // closed by markConnLost; per-turn watcher
 	lastTurn   *LastTurn          // reported on the next hello
+	queued     []queuedQuery      // FIFO follow-ups behind the running turn
+	flushed    int                // leading queued entries a cancel/shutdown dropped
 	turnDone   chan struct{}      // closed when the running turn's result is queued
 	outbox     chan []byte        // upstream messages awaiting the write pump
 	connCtx    connCtxHolder      // the live connection's context (for SendEvent)
@@ -123,7 +126,7 @@ type Client struct {
 
 // New builds a client; all Handlers must be non-nil.
 func New(opts Options, h Handlers) (*Client, error) {
-	if h.RunTurn == nil || h.Cancel == nil || h.Approve == nil || h.Steer == nil ||
+	if h.RunTurn == nil || h.Approve == nil || h.Steer == nil ||
 		h.SetModel == nil || h.SetThinking == nil || h.CurrentModel == nil || h.SupportsVision == nil {
 		return nil, fmt.Errorf("wsclient: all Handlers must be non-nil")
 	}
@@ -191,9 +194,10 @@ func (c *Client) send(ctx context.Context, v any) {
 // outbox is the lossless buffer per PROTOCOL.md §4's backpressure contract:
 // a slow control plane stalls the wiring pump (and the bus behind it),
 // never a dropped event. It gives up only when ctx (the connection context)
-// ends — a dead connection's backlog is discarded by design.
+// ends — a dead connection's backlog is discarded by design, including
+// events a lost turn emits after the agent has reconnected.
 func (c *Client) SendEvent(ctx context.Context, turnID string, envelope json.RawMessage) {
-	if c.Running() == "" {
+	if !c.turnLive(turnID) {
 		return
 	}
 	b, err := json.Marshal(Event{Type: "event", ID: turnID, Envelope: envelope})
@@ -211,13 +215,46 @@ func (c *Client) SendEvent(ctx context.Context, turnID string, envelope json.Raw
 // RequestApproval asks the plane to decide an escalated tool call. The
 // call waits on the harness side until the plane's approve arrives.
 func (c *Client) RequestApproval(turnID, callID, tool, input string) {
+	if !c.turnLive(turnID) {
+		return
+	}
 	c.send(c.ConnContext(), ApprovalRequest{Type: "approval_request", TurnID: turnID, ID: callID, Tool: tool, Input: input})
 }
 
 // RequestInput asks the plane's user a question; the plane's answer comes
 // back through Handlers.Answer quoting id.
 func (c *Client) RequestInput(turnID, id, question string) {
+	if !c.turnLive(turnID) {
+		return
+	}
 	c.send(c.ConnContext(), InputRequest{Type: "input_request", TurnID: turnID, ID: id, Question: question})
+}
+
+// Disconnect drops the live connection from the agent side, for a plane
+// that is connected but no longer reading. It takes the normal disconnect
+// path: the running turn is cancelled (cancelled_disconnect), the client
+// reconnects with backoff and reports it in the next hello.
+func (c *Client) Disconnect(reason string) {
+	slog.Warn("wsclient: dropping connection", "reason", reason)
+	c.markConnLost() // ending the connection cancels the turn context
+	c.connCtx.end()
+}
+
+// turnLive reports whether turnID is the running turn and its connection is
+// still up: a turn cancelled by a disconnect keeps running briefly, and
+// nothing it emits may reach a newer connection.
+func (c *Client) turnLive(turnID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if turnID == "" || turnID != c.currentID {
+		return false
+	}
+	select {
+	case <-c.connLost:
+		return false
+	default:
+		return true
+	}
 }
 
 // Running reports the correlation id of the running turn, "" when idle.
@@ -231,8 +268,9 @@ func (c *Client) Running() string {
 // pump can block on the same liveness the write pump has (a dead connection
 // unblocks SendEvent's lossless send). Swapped per connection under mu.
 type connCtxHolder struct {
-	mu  sync.Mutex
-	ctx context.Context
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc // ends the connection (Disconnect)
 }
 
 func (h *connCtxHolder) get() context.Context {
@@ -244,10 +282,27 @@ func (h *connCtxHolder) get() context.Context {
 	return h.ctx
 }
 
-func (h *connCtxHolder) set(ctx context.Context) {
+func (h *connCtxHolder) set(ctx context.Context, cancel context.CancelFunc) {
 	h.mu.Lock()
-	h.ctx = ctx
+	h.ctx, h.cancel = ctx, cancel
 	h.mu.Unlock()
+}
+
+// clear marks the connection gone; get falls back until the next set.
+func (h *connCtxHolder) clear() {
+	h.mu.Lock()
+	h.ctx, h.cancel = nil, nil
+	h.mu.Unlock()
+}
+
+// end cancels the live connection, if any.
+func (h *connCtxHolder) end() {
+	h.mu.Lock()
+	cancel := h.cancel
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // ConnContext reports the live connection's context, for the wiring's event
@@ -313,6 +368,7 @@ func (c *Client) Run(ctx context.Context) error {
 		if err != nil {
 			slog.Warn("control plane connection lost", "url", c.opts.URL, "error", err)
 		}
+		c.awaitTurnTeardown(ctx)
 		delay := jitter(backoff, c.opts.Random)
 		slog.Info("reconnecting to control plane", "url", c.opts.URL, "delay", delay)
 		select {
@@ -321,6 +377,24 @@ func (c *Client) Run(ctx context.Context) error {
 			return nil
 		}
 		backoff = min(backoff*2, maxBackoff)
+	}
+}
+
+// awaitTurnTeardown waits (bounded by teardownWait) for a turn cancelled by
+// the disconnect to finish, so the next hello carries its last_turn: full
+// jitter can make the reconnect delay near zero.
+func (c *Client) awaitTurnTeardown(ctx context.Context) {
+	c.mu.Lock()
+	done := c.turnDone
+	c.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(teardownWait):
+		slog.Warn("wsclient: cancelled turn still running; reconnecting without its last_turn")
+	case <-ctx.Done():
 	}
 }
 
@@ -372,17 +446,14 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 		return err
 	}
 	slog.Info("connected to control plane", "url", c.opts.URL)
-	if c.h.OnReconnect != nil {
-		c.h.OnReconnect()
-	}
 
 	// connCtx is the connection's lifetime; the in-flight turn's context
 	// derives from it, so a dead socket cancels the turn (the load-bearing
 	// rule). connDone closes exactly once, when connCtx ends.
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
-	c.connCtx.set(connCtx)
-	defer c.connCtx.set(nil)
+	c.connCtx.set(connCtx, connCancel)
+	defer c.connCtx.clear()
 	connDone := make(chan struct{})
 	var once sync.Once
 	closeConn := func() { once.Do(func() { close(connDone) }) }
@@ -505,12 +576,12 @@ func (c *Client) dispatch(ctx context.Context, msg any) {
 			slog.Warn("wsclient: steer failed", "error", err)
 		}
 	case *Cancel:
-		// Cancel the running turn's context FIRST (so the turn reports the
-		// clean "cancelled" outcome), then flush the queue via the handler.
-		// The connLost watcher is deliberately left open: the connection
-		// is alive, and the classification below keys on it.
+		// Drop the queue, then cancel the running turn's context (so the
+		// turn reports the clean "cancelled" outcome). The connLost watcher
+		// is deliberately left open: the connection is alive, and the
+		// classification in runTurn keys on it.
+		c.flushQueued()
 		c.cancelTurnContext()
-		c.h.Cancel()
 	case *Approve:
 		c.h.Approve(m.CallID, m.Approved, m.Glob, m.Scope)
 	case *SetModel:
@@ -545,11 +616,11 @@ func (c *Client) shutdown(m Shutdown) {
 		return // a second shutdown is a no-op; the first is in progress
 	}
 	slog.Info("wsclient: shutdown requested by control plane", "id", m.ID)
+	c.flushQueued()
 	c.mu.Lock()
 	done := c.turnDone
 	c.mu.Unlock()
 	c.cancelTurnContext()
-	c.h.Cancel()
 	go func() {
 		if done != nil {
 			<-done
@@ -558,88 +629,130 @@ func (c *Client) shutdown(m Shutdown) {
 	}()
 }
 
-// executeQuery runs one turn synchronously in its own goroutine: the read
-// pump must keep dispatching (steer/cancel/approve) while the turn runs.
+// queuedQuery is a query waiting behind the running turn, with the
+// connection context it arrived on.
+type queuedQuery struct {
+	ctx context.Context
+	q   *Query
+}
+
+// executeQuery starts q now if idle, or queues it FIFO behind the running
+// turn (PROTOCOL.md §4). Turns run in their own goroutine: the read pump
+// must keep dispatching (steer/cancel/approve) while a turn runs. Once
+// shutdown has begun no turn starts: a queued query is dropped by the
+// running turn, an idle one reports "cancelled" here.
 func (c *Client) executeQuery(ctx context.Context, q *Query) {
 	c.mu.Lock()
-	if c.cancelTurn != nil {
-		// A turn is already running; per PROTOCOL.md §4 the plane may queue,
-		// but queueing is the wiring's job — reflect the running turn and
-		// let the plane decide. (cmd/app keeps a queue; the client tracks
-		// only the active turn.)
+	if c.currentID != "" || len(c.queued) > 0 {
+		c.queued = append(c.queued, queuedQuery{ctx: ctx, q: q})
 		c.mu.Unlock()
-		slog.Warn("wsclient: query arrived while a turn is running", "id", q.ID)
 		return
 	}
-	c.currentID = q.ID
+	if c.shuttingDown.Load() {
+		c.mu.Unlock()
+		c.send(ctx, Result{Type: "result", ID: q.ID, Outcome: "cancelled"})
+		return
+	}
+	c.startTurnLocked(ctx, q)
 	c.mu.Unlock()
+}
 
-	// connLost is closed by cancelInFlight when the connection drops, so the
-	// outcome classification below can tell "explicit cancel" from
-	// "disconnect" without racing the connection context's teardown.
-	// turnDone closes once the result is queued, so a shutdown can ack after
-	// it.
+// startTurnLocked installs q as the running turn and runs it. c.mu is held.
+func (c *Client) startTurnLocked(ctx context.Context, q *Query) {
+	// Turn context: child of the connection context. When the socket
+	// dies, this cancels and the harness turn aborts cleanly.
+	turnCtx, cancel := context.WithCancel(ctx)
+	// connLost is closed by markConnLost when the connection drops, so the
+	// outcome classification can tell "explicit cancel" from "disconnect"
+	// without racing the connection context's teardown. turnDone closes
+	// once the result (and any flushed queue's results) is queued, so a
+	// shutdown can ack after it.
 	connLost := make(chan struct{})
 	turnDone := make(chan struct{})
-	c.mu.Lock()
+	c.currentID = q.ID
+	c.cancelTurn = cancel
 	c.connLost = connLost
 	c.turnDone = turnDone
+	go c.runTurn(ctx, turnCtx, cancel, q, connLost, turnDone)
+}
+
+// runTurn executes one turn, reports its result, reports queued queries a
+// cancel/shutdown dropped, then starts the next queued query, if any.
+func (c *Client) runTurn(ctx, turnCtx context.Context, cancel context.CancelFunc, q *Query, connLost, turnDone chan struct{}) {
+	report := c.h.RunTurn(turnCtx, q)
+
+	c.mu.Lock()
+	c.cancelTurn = nil
+	c.currentID = ""
 	c.mu.Unlock()
+	// Classify BEFORE releasing the turn context: once cancel() runs,
+	// turnCtx.Err() is non-nil and a completed turn would misread as
+	// cancelled.
+	lost := false
+	select {
+	case <-connLost:
+		lost = true
+	default:
+	}
+	turnWasCancelled := turnCtx.Err() != nil
+	cancel() // release the turn context either way
 
-	go func() {
-		// Turn context: child of the connection context. When the socket
-		// dies, this cancels and the harness turn aborts cleanly.
-		turnCtx, cancel := context.WithCancel(ctx)
+	outcome := "completed"
+	errMsg := ""
+	switch {
+	case turnWasCancelled && !lost:
+		// Turn context died but the connection lives: an explicit
+		// cancel command.
+		outcome = "cancelled"
+	case turnWasCancelled && lost:
+		// Connection dead: record for the next hello; the result may
+		// never reach the plane (advisory per PROTOCOL.md §4).
+		outcome = "cancelled_disconnect"
 		c.mu.Lock()
-		c.cancelTurn = cancel
+		c.lastTurn = &LastTurn{ID: q.ID, Outcome: outcome}
 		c.mu.Unlock()
+	case report.Err != nil:
+		outcome = "error"
+		errMsg = report.Err.Error()
+	}
+	if outcome != "cancelled_disconnect" {
+		c.send(ctx, Result{
+			Type: "result", ID: q.ID, Outcome: outcome, Answer: report.Answer, Error: errMsg,
+			DeniedTools: report.Denied, FilesTouched: report.FilesTouched,
+		})
+	}
 
-		report := c.h.RunTurn(turnCtx, q)
-
+	// Queries a cancel or shutdown dropped report "cancelled" after the
+	// turn they queued behind, keeping results in query order. Popped one
+	// at a time: the send may block, and it must not hold mu.
+	for {
 		c.mu.Lock()
-		c.cancelTurn = nil
-		c.currentID = ""
-		c.turnDone = nil
-		connLostLocal := c.connLost // the watcher installed for this turn
+		if len(c.queued) == 0 || (c.flushed == 0 && !c.shuttingDown.Load()) {
+			break // mu stays held for the handoff below
+		}
+		d := c.queued[0]
+		c.queued = slices.Clone(c.queued[1:])
+		c.flushed = max(c.flushed-1, 0)
 		c.mu.Unlock()
-		defer close(turnDone)
-		// Classify BEFORE releasing the turn context: once cancel() runs,
-		// turnCtx.Err() is non-nil and a completed turn would misread as
-		// cancelled.
-		lost := false
-		select {
-		case <-connLostLocal:
-			lost = true
-		default:
-		}
-		turnWasCancelled := turnCtx.Err() != nil
-		cancel() // release the turn context either way
+		c.send(d.ctx, Result{Type: "result", ID: d.q.ID, Outcome: "cancelled"})
+	}
+	defer c.mu.Unlock()
+	c.turnDone = nil
+	close(turnDone)
+	if len(c.queued) > 0 {
+		next := c.queued[0]
+		c.queued = slices.Clone(c.queued[1:])
+		c.startTurnLocked(next.ctx, next.q)
+	}
+}
 
-		outcome := "completed"
-		errMsg := ""
-		switch {
-		case turnWasCancelled && !lost:
-			// Turn context died but the connection lives: an explicit
-			// cancel command.
-			outcome = "cancelled"
-		case turnWasCancelled && lost:
-			// Connection dead: record for the next hello; the result may
-			// never reach the plane (advisory per PROTOCOL.md §4).
-			outcome = "cancelled_disconnect"
-			c.mu.Lock()
-			c.lastTurn = &LastTurn{ID: q.ID, Outcome: outcome}
-			c.mu.Unlock()
-		case report.Err != nil:
-			outcome = "error"
-			errMsg = report.Err.Error()
-		}
-		if outcome != "cancelled_disconnect" {
-			c.send(ctx, Result{
-				Type: "result", ID: q.ID, Outcome: outcome, Answer: report.Answer, Error: errMsg,
-				DeniedTools: report.Denied, FilesTouched: report.FilesTouched,
-			})
-		}
-	}()
+// flushQueued marks every currently queued query dropped: the running
+// turn reports them "cancelled" after its own result. Queries arriving
+// later are unaffected.
+func (c *Client) flushQueued() {
+	c.mu.Lock()
+	c.flushed = len(c.queued)
+	c.mu.Unlock()
 }
 
 // cancelInFlight is the disconnect path: cancel the running turn's context
@@ -647,9 +760,21 @@ func (c *Client) executeQuery(ctx context.Context, q *Query) {
 // turn's connLost watcher (so the outcome classifies as
 // cancelled_disconnect), and notify the wiring.
 func (c *Client) cancelInFlight() {
+	c.markConnLost() // before the cancel, or the turn may classify first
 	c.cancelTurnContext()
+	if c.h.OnDisconnect != nil {
+		c.h.OnDisconnect()
+	}
+}
+
+// markConnLost closes the running turn's connLost watcher (so its outcome
+// classifies as cancelled_disconnect) and discards the queue. It must run
+// before anything cancels the turn. Idempotent.
+func (c *Client) markConnLost() {
 	c.mu.Lock()
 	connLost := c.connLost
+	c.queued = nil // the plane infers from the disconnect; never carried
+	c.flushed = 0
 	c.mu.Unlock()
 	if connLost != nil {
 		select {
@@ -657,9 +782,6 @@ func (c *Client) cancelInFlight() {
 		default:
 			close(connLost)
 		}
-	}
-	if c.h.OnDisconnect != nil {
-		c.h.OnDisconnect()
 	}
 }
 

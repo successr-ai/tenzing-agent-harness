@@ -45,11 +45,15 @@ After `welcome`, the agent is registered; the plane MAY send commands at any tim
 
 | Type | Fields | When |
 |------|--------|------|
-| `event` | `{turn_id, envelope}` | Every harness event of the running turn. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). Includes `thinking_delta` (`data.text`: one streamed chunk of reasoning); `text_delta` is not sent — answer text arrives in `llm.response`. |
+| `event` | `{id, envelope}` | Every harness event of the running turn; `id` is the correlation id of the `query` that started it. `envelope` is the versioned `internal/app/wire` envelope verbatim (`v`, `type`, `ts`, `runner_id`, `data`). Includes `thinking_delta` (`data.text`: one streamed chunk of reasoning); `text_delta` is not sent — answer text arrives in `llm.response`. `model.changed` and `thinking.changed` are not sent either: they echo `set-model`/`set-thinking` between turns and are not turn events. |
 | `approval_request` | `{turn_id, id, tool, input}` | A mutating tool call needs approval. The turn blocks until `approve` or cancellation/timeout. Sent only when `approval_timeout` > 0 (connect mode's default is 0: deny immediately, nothing sent). |
 | `input_request` | `{turn_id, id, question}` | The agent called `ask_user`. The turn blocks until `answer` quoting `id` arrives, or the turn is cancelled; the answer is the tool's result. |
-| `result` | `{turn_id, id, outcome, answer?, error?, denied_tools, files_touched?}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
+| `result` | `{id, outcome, answer?, error?, denied_tools, files_touched?}` | End of a turn. `outcome`: `"completed" \| "error" \| "cancelled" \| "cancelled_disconnect"`. `id` is the correlation id of the `query` that started the turn. Exactly one `result` per accepted `query`. |
 | `shutdown_ack` | `{id}` | Reply to `shutdown`, after the running turn's `result` (if any). The agent closes the connection normally and exits 0 right after. |
+
+Turn correlation: `event` and `result` carry the turn's `query` id as `id`.
+`approval_request` and `input_request` carry it as `turn_id`, because their own `id`
+names the call or request the plane answers.
 
 `result.denied_tools` counts tool calls denied by the permission policy during the
 turn (mirrors print mode's stderr summary). `result.files_touched` lists the paths of
@@ -64,12 +68,12 @@ the plane reads the sandbox for content.
 |------|--------|--------|
 | `query` | `{id, query, images?}` | Start a turn (queued if one is running; FIFO). Reply: `result` when the turn ends, with this `id`. `images` is the queryInput image array (media_type + base64 data). |
 | `steer` | `{id, message}` | Inject mid-turn steering. Acknowledged by an `event` (SteeringInjected) — no dedicated reply. |
-| `cancel` | `{id}` | Cancel the running turn (and drop queued ones). The turn ends with `result{outcome:"cancelled"}`. |
+| `cancel` | `{id}` | Cancel the running turn (and drop queued ones). The turn ends with `result{outcome:"cancelled"}`; each dropped query then reports `result{outcome:"cancelled"}`, in queue order. |
 | `approve` | `{id, call_id, approved, glob?, scope?}` | Answer a pending `approval_request`. `glob` adds a bash allow rule when `approved`. `scope` is `"always"` (default) or `"session"`. `session` keeps the glob **in memory for the process lifetime**. `always` persists it to settings.json in serve-mode parity — except that connect mode's default `connect.ephemeral_grants: true` still keeps it in memory; set it to `false` to persist. |
 | `answer` | `{id, request_id, text}` | Answer a pending `input_request` (`request_id` is its `id`). An answer for a request whose turn has ended is dropped. |
 | `set-model` | `{id, model}` | Switch the main model (same validation as POST /model). Errors: `{type:"error", id, detail}`. |
 | `set-thinking` | `{id, enabled}` | Toggle reasoning. |
-| `shutdown` | `{id}` | Graceful teardown: cancel the running turn (it reports `result{outcome:"cancelled"}`) and drop queued ones, then reply `shutdown_ack{id}`, close normally, and exit 0. The agent does not reconnect. |
+| `shutdown` | `{id}` | Graceful teardown: cancel the running turn (it reports `result{outcome:"cancelled"}`) and drop queued ones (each reports `result{outcome:"cancelled"}` after it), then reply `shutdown_ack{id}`, close normally, and exit 0. The agent does not reconnect. A `query` arriving after `shutdown` never runs; it reports `result{outcome:"cancelled"}`. |
 
 Correlation: every command's `id` is echoed on the message that answers it. Commands
 that produce no dedicated reply (`steer`) are acknowledged by their side effects.
@@ -81,10 +85,16 @@ plane's responsibility.
 
 - **Turn scope**: one active turn per agent process (mirrors `turnqueue`).
   Additional `query` commands queue FIFO; each gets its own `result` in order.
+- **Event ordering**: every event a turn emits is sent before that turn's `result`;
+  after `result`, no further events carry that turn's id.
 - **Disconnect cancels the turn.** The agent detects connection loss (read error,
-  write error, close frame) and cancels the in-flight turn's context. Pending
+  write error, close frame) and cancels the in-flight turn's context and discards
+  queued queries (no `result`; they never run on the next connection). Pending
   approvals break with the same context. The turn's buffered-but-unsent event backlog
-  is discarded; the turn's `result` is queued with
+  is discarded, and so is anything the cancelled turn emits while it winds down: none
+  of it reaches the next connection. Before redialing, the agent waits up to 5s for
+  the cancelled turn to finish, so the next `hello` carries its outcome. The turn's
+  `result` is queued with
   `outcome:"cancelled_disconnect"` and reported on the *next* connection in
   `hello.last_turn` (the result itself may never arrive if the connection is dead —
   the plane infers the outcome from the disconnect).
@@ -105,8 +115,13 @@ plane's responsibility.
   flush, same exit code). Neither path reconnects. An agent older than this command
   drops it as unknown (§6); the plane then falls back to SIGTERM.
 - **Backpressure**: a slow plane blocks the agent's write pump. Events buffer
-  losslessly in an unbounded per-turn queue on the bus side; nothing drops. A
-  connected-but-slow plane does NOT cancel the turn — only a *disconnected* one does.
+  losslessly: the client's outbox (1024 messages) fills first, then the event
+  forwarder's unbounded in-memory queue takes the backlog, so the bus subscription
+  never fills and nothing drops. A connected-but-slow plane does NOT cancel the
+  turn — only a *disconnected* one does. The exception is a plane that has stopped
+  reading: once the backlog passes 100,000 events the agent discards it and drops the
+  connection itself, which then follows the disconnect rules above (turn
+  `cancelled_disconnect`, reported in the next `hello.last_turn`).
 
 ## 5. Auth
 

@@ -1,5 +1,16 @@
 # Control-Plane Fleet Support: WebSocket dial-out agent mode (protocol v1)
 
+> **Later changes (2026-09-26).** PROTOCOL.md is the current contract; where this
+> plan disagrees, it wins. Changed since this plan was written:
+> - Every event a turn emits is sent before that turn's `result`: the forwarder is
+>   flushed before the turn reports.
+> - Connect-mode event delivery gained its queue only on 2026-09-26 (see step 4);
+>   before that, a slow plane could make the bus drop events. Past 100k queued
+>   events the agent drops the connection instead of buffering further.
+> - The turn queue lives in `wsclient` (`executeQuery`), not in the `cmd/app`
+>   wiring: a `query` arriving mid-turn waits FIFO instead of being dropped.
+> - `event` and `result` carry the turn as `id`, not `turn_id`.
+
 ## Context
 
 tenzing is run today as either a human-attended HTTP/SSE server (no `-p` flag) or a
@@ -131,7 +142,8 @@ Decisions:
    cancelled, backlog discarded, `cancelled_disconnect` outcome on next hello), auth,
    error taxonomy (config error vs. transient), backpressure semantics (a slow control
    plane blocks the agent's write pump — `eventQueue` buffers the bus side losslessly;
-   the turn keeps running but events are not acknowledged until drained; no drop), and
+   the turn keeps running but events are not acknowledged until drained; no drop — as
+   planned; connect mode only got the `eventQueue` on 2026-09-26), and
    versioning rule (additive = minor, breaking = bump `protocol`).
 
 5. **Testing** (`cmd/app`, `internal/app/wsclient`):

@@ -4,6 +4,16 @@ Status: **implemented 2026-09-13**. Implements every item in
 `TENZING_CHANGES.md` (same directory), including the §2 nice-to-haves and the
 connect+resume e2e test. Source review on branch `tbright/ws-dial-refactor`.
 
+> **Later changes (2026-09-26).** The `cmd/app` serial queue described below
+> (`connectSerialQueue`, `connectRunFunc`, `TestConnectSerialQueue`) was deleted.
+> The FIFO turn queue now lives in `wsclient.Client` (`executeQuery`), because
+> `executeQuery` used to drop a query arriving mid-turn before the wiring's queue
+> ever saw it. `Handlers.Cancel` and `Handlers.OnReconnect` were removed with it:
+> `cancel` and `shutdown` drop the client's queue directly, and each dropped query
+> reports `result{outcome:"cancelled"}`. The planned
+> `TestShutdownCallsCancelHandler` check (it lived in `TestShutdownMidTurn`) is gone
+> for the same reason. PROTOCOL.md is the current contract.
+
 Found and fixed along the way (outside the original list):
 
 - `runConnect` passed a nil tee to `setupLogging`, so `io.MultiWriter(logFile,

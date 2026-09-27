@@ -107,7 +107,7 @@ cmd/app/configmerge.go                  tenzing.yaml merge layer — resolveConf
 cmd/app/container.go                    AppContainer — config, logging, trust + project config, agent server + HTTP server wiring
 cmd/app/print.go                        Print mode — one-shot turn (with @path.png image args), text/JSONL output, exit codes
 cmd/app/deps.go                          deps — model registry + LLM client Factory built per run, parked on cfg.deps (buildDeps, resolve)
-cmd/app/connect.go                       Connect mode — control-plane dial-out (runConnect, connectSerialQueue, event forwarding)
+cmd/app/connect.go                       Connect mode — control-plane dial-out (runConnect, runConnectTurn, event forwarding)
 cmd/app/projectconfig.go                Drop-in config — SYSTEM.md/APPEND_SYSTEM.md overrides + prompt-template dirs, trust-gated
 cmd/app/settingsfile.go                 settings.json loader — per-command bash globs layered onto the permission policy
 internal/app/modelregistry/             Model registry + client factory — tenzing.yaml providers:/models: → Registry (Build/Resolve/ResolveSystemOne/Names/List/Pricing),

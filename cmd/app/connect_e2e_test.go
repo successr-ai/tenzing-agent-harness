@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -320,5 +321,123 @@ func TestConnectForwardsThinkingDeltas(t *testing.T) {
 	}
 	if got := strings.Join(thinking, ""); got != "hmm, let me see" {
 		t.Fatalf("forwarded thinking = %q, want %q", got, "hmm, let me see")
+	}
+}
+
+// TestConnectForwardsTurnEventsBeforeResult: every event a turn emits —
+// including the late llm.response / loop.stopped / turn.completed — reaches
+// the plane before that turn's result.
+func TestConnectForwardsTurnEventsBeforeResult(t *testing.T) {
+	redirectUserConfig(t)
+	t.Chdir(t.TempDir())
+	reg, err := buildTestRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	var responseText string
+	plane := newE2EPlane(t, func(pc *e2eConn) {
+		pc.send(wsclient.Query{Type: "query", ID: "q-order", Query: "ping"})
+		for {
+			_, data, err := pc.conn.Read(pc.ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Type     string `json:"type"`
+				ID       string `json:"id"`
+				Envelope struct {
+					Type string `json:"type"`
+					Data struct {
+						Text string `json:"text"`
+					} `json:"data"`
+				} `json:"envelope"`
+			}
+			if json.Unmarshal(data, &m) != nil {
+				continue
+			}
+			if m.Type == "result" {
+				break
+			}
+			if m.Type == "event" && m.ID == "q-order" {
+				types = append(types, m.Envelope.Type)
+				if m.Envelope.Type == "llm.response" {
+					responseText = m.Envelope.Data.Text
+				}
+			}
+		}
+		pc.send(wsclient.Shutdown{Type: "shutdown", ID: "s-order"})
+		pc.readUntil("shutdown_ack")
+	})
+	cfg := &cliConfig{
+		Model:           "alpha",
+		SkipPermissions: true,
+		NoContextFiles:  true,
+		Trust:           true,
+		ConnectURL:      plane.url(),
+		ConnectBackoff:  10 * time.Millisecond,
+		deps:            &deps{models: reg, llms: &fakeLLMs{llm: &scriptedLLM{answer: "PONG"}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := runConnect(ctx, cfg); err != nil {
+		t.Fatalf("runConnect: %v", err)
+	}
+	for _, want := range []string{"llm.response", "reasoning.finished", "loop.stopped", "turn.completed"} {
+		if !slices.Contains(types, want) {
+			t.Errorf("events before result missing %q; got %v", want, types)
+		}
+	}
+	if responseText != "PONG" {
+		t.Errorf("llm.response text = %q, want %q", responseText, "PONG")
+	}
+}
+
+// TestConnectQueuesConcurrentQueries: a second query sent before the first
+// finishes queues behind it; both run and report, in order.
+func TestConnectQueuesConcurrentQueries(t *testing.T) {
+	redirectUserConfig(t)
+	t.Chdir(t.TempDir())
+	reg, err := buildTestRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	plane := newE2EPlane(t, func(pc *e2eConn) {
+		pc.send(wsclient.Query{Type: "query", ID: "q-a", Query: "one"})
+		pc.send(wsclient.Query{Type: "query", ID: "q-b", Query: "two"})
+		for len(results) < 2 {
+			_, data, err := pc.conn.Read(pc.ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Type    string `json:"type"`
+				ID      string `json:"id"`
+				Outcome string `json:"outcome"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.Type == "result" {
+				results = append(results, m.ID+":"+m.Outcome)
+			}
+		}
+		pc.send(wsclient.Shutdown{Type: "shutdown", ID: "s-queue"})
+		pc.readUntil("shutdown_ack")
+	})
+	cfg := &cliConfig{
+		Model:           "alpha",
+		SkipPermissions: true,
+		NoContextFiles:  true,
+		Trust:           true,
+		ConnectURL:      plane.url(),
+		ConnectBackoff:  10 * time.Millisecond,
+		deps:            &deps{models: reg, llms: &fakeLLMs{llm: &scriptedLLM{answer: "ok"}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := runConnect(ctx, cfg); err != nil {
+		t.Fatalf("runConnect: %v", err)
+	}
+	if want := []string{"q-a:completed", "q-b:completed"}; !slices.Equal(results, want) {
+		t.Errorf("results = %v, want %v", results, want)
 	}
 }

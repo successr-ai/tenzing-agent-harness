@@ -36,7 +36,7 @@ func TestShutdownMidTurn(t *testing.T) {
 		pc.send(Shutdown{Type: "shutdown", ID: "s1"})
 		recordUpstream(pc, t)
 	})
-	h, rec := handlersFor(t)
+	h, _ := handlersFor(t)
 	c := newTestClient(t, p, h, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,6 +52,12 @@ func TestShutdownMidTurn(t *testing.T) {
 		t.Fatal("Run did not return after shutdown")
 	}
 
+	// Run returning doesn't mean the plane has recorded everything yet.
+	waitFor(t, "result, shutdown_ack", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.upstream) >= 2
+	})
 	p.mu.Lock()
 	msgs := append([]map[string]any(nil), p.upstream...)
 	conns := p.connections
@@ -67,12 +73,6 @@ func TestShutdownMidTurn(t *testing.T) {
 	}
 	if conns != 1 {
 		t.Errorf("connections = %d, want 1 (no reconnect after shutdown)", conns)
-	}
-	rec.mu.Lock()
-	cancels := rec.cancels
-	rec.mu.Unlock()
-	if cancels != 1 {
-		t.Errorf("Cancel handler calls = %d, want 1", cancels)
 	}
 }
 
@@ -98,6 +98,11 @@ func TestShutdownIdle(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after shutdown")
 	}
+	waitFor(t, "shutdown_ack", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.upstream) >= 1
+	})
 	p.mu.Lock()
 	msgs := append([]map[string]any(nil), p.upstream...)
 	p.mu.Unlock()

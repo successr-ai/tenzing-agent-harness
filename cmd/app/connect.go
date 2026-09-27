@@ -23,7 +23,8 @@ import (
 // harness's own cancellation path — each turn's context derives from the
 // connection context inside wsclient, so a dropped socket cancels the
 // in-flight turn (the loop's clean "turn canceled" outcome) and the wiring
-// stops forwarding that turn's events.
+// stops forwarding that turn's events. Every event a turn emits is forwarded
+// before its result: the turn flushes the forwarder before it reports.
 func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.HarnessOption) error {
 	model, err := cfg.deps.resolve(cfg.Model)
 	if err != nil {
@@ -112,12 +113,23 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 	stats := newTurnStats()
 	registry := approvals.NewRegistry()
 
-	// The serial queue: one turn at a time with FIFO follow-ups (PROTOCOL.md
-	// §4). The wsclient's RunTurn handler funnels through it, so a query
-	// arriving mid-turn waits for the next slot; disconnect flushes waiters.
-	serial := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
-		return runConnectTurn(ctx, h, stats, cmd)
-	})
+	// The flush barrier: a finished turn hands the forwarder an ack and waits
+	// for it, so its queued events go out (and are tallied) before its result.
+	// The process ctx, not the turn's: a cancelled turn still flushes; a dead
+	// forwarder (process exit) can't hang the turn.
+	flushReq := make(chan chan struct{})
+	flushEvents := func() {
+		ack := make(chan struct{})
+		select {
+		case flushReq <- ack:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-ack:
+		case <-ctx.Done():
+		}
+	}
 
 	client, err = wsclient.New(wsclient.Options{
 		URL:     cfg.ConnectURL,
@@ -125,9 +137,12 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 		CWD:     cwd,
 		Backoff: cfg.ConnectBackoff,
 	}, wsclient.Handlers{
-		RunTurn: serial.run,
-		Steer:   h.Steer,
-		Cancel:  serial.flush, // the explicit cancel: flush waiters (the running turn is cancelled by the client's cancel command path)
+		// One turn at a time with FIFO follow-ups (PROTOCOL.md §4) is the
+		// client's job: it calls RunTurn only when a turn actually starts.
+		RunTurn: func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
+			return runConnectTurn(ctx, h, stats, cmd, flushEvents)
+		},
+		Steer: h.Steer,
 		Approve: func(callID string, approved bool, glob, scope string) {
 			connectApprove(cfg.BashAllow, registry, cfg.ConnectEphemeralGrants || scope == "session", callID, approved, glob)
 		},
@@ -142,11 +157,7 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 			}
 			return h.ConversationID()
 		},
-		OnDisconnect: func() {
-			serial.flush() // waiters give up; the plane infers from the disconnect
-			stats.reset()  // the dead turn's tally dies with it
-		},
-		OnReconnect: serial.reset, // accept fresh queries on the new connection
+		OnDisconnect: stats.reset, // the dead turn's tally dies with it
 	})
 	if err != nil {
 		return fmt.Errorf("wsclient init: %w", err)
@@ -156,104 +167,26 @@ func runConnect(ctx context.Context, cfg *cliConfig, extraOpts ...harness.Harnes
 	// capture) and push every forwardable event upstream, tagged with the
 	// running turn's correlation id.
 	sub := h.EventBus().Subscribe(256)
-	go forwardConnectEvents(ctx, sub, client, registry, stats)
+	go forwardConnectEvents(ctx, sub, client, registry, stats, flushReq)
 
 	// Run until the process context is cancelled; Run reconnects forever on
 	// transient failures and exits non-zero on fatal ones.
 	return client.Run(ctx)
 }
 
-// connectRunFunc executes one turn on ctx and reports its outcome.
-type connectRunFunc func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport
-
-// connectSerialQueue serializes turn execution with FIFO follow-ups. The
-// wsclient calls run from executeQuery (one goroutine per accepted query);
-// waiters park until it is their turn. Semantics, per PROTOCOL.md §4 and the
-// advisor flags: a `cancel` command flushes waiters (they report outcome
-// "cancelled" — serve-mode parity: cancelling wants the agent to stop, not
-// to watch the queue start the next turn); a disconnect does the same (the
-// plane infers from the disconnect; held queries would run unobserved after
-// reconnect — flush, don't carry).
-type connectSerialQueue struct {
-	runFn connectRunFunc
-
-	mu      sync.Mutex
-	cv      *sync.Cond // broadcast on slot release and on flush
-	running bool
-	flushed bool // cancel/disconnect: waiters give up instead of starting
-}
-
-// newConnectSerialQueue builds an idle queue over runFn.
-func newConnectSerialQueue(runFn connectRunFunc) *connectSerialQueue {
-	q := &connectSerialQueue{runFn: runFn}
-	q.cv = sync.NewCond(&q.mu)
-	return q
-}
-
-// run executes cmd now if idle, or parks it FIFO until its turn comes.
-// It blocks until this cmd's turn finishes, so the caller (the wsclient's
-// per-query goroutine) can report the result.
-func (q *connectSerialQueue) run(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
-	q.mu.Lock()
-	for q.running && !q.flushed {
-		q.cv.Wait()
-	}
-	if q.flushed {
-		q.mu.Unlock()
-		return wsclient.TurnReport{Err: context.Canceled}
-	}
-	q.running = true
-	q.mu.Unlock()
-
-	defer func() {
-		q.mu.Lock()
-		q.running = false
-		q.cv.Broadcast()
-		q.mu.Unlock()
-	}()
-	return q.runFn(ctx, cmd)
-}
-
-// flush marks the queue flushed and wakes every waiter; the slot owner
-// (if any) is cancelled by the caller of flush (wsclient cancelInFlight for
-// disconnects, the explicit cancel command for user cancels).
-func (q *connectSerialQueue) flush() {
-	q.mu.Lock()
-	q.flushed = true
-	q.cv.Broadcast()
-	q.mu.Unlock()
-}
-
-// reset clears the flush marker after a disconnect so the reconnected
-// connection accepts fresh queries. Only the disconnect path calls it.
-func (q *connectSerialQueue) reset() {
-	q.mu.Lock()
-	q.flushed = false
-	q.mu.Unlock()
-}
-
-// parked reports how many goroutines are waiting for a slot (test probe;
-// with one waiter at most in practice, 0 or 1).
-func (q *connectSerialQueue) parked() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.running {
-		return 1
-	}
-	return 0
-}
-
 // runConnectTurn executes one turn: RunTurnWithImages with the images from
 // the command, reporting the answer, error, and the turn's tally (denied
 // calls, files touched). The turn context arrives already tied to connection
-// liveness from the wsclient.
-func runConnectTurn(ctx context.Context, h *harness.Harness, stats *turnStats, cmd *wsclient.Query) wsclient.TurnReport {
+// liveness from the wsclient. flush runs before the tally is read, so the
+// turn's late events are forwarded and counted before the result.
+func runConnectTurn(ctx context.Context, h *harness.Harness, stats *turnStats, cmd *wsclient.Query, flush func()) wsclient.TurnReport {
 	images := make([]common.ImageSource, len(cmd.Images))
 	for i, img := range cmd.Images {
 		images[i] = common.ImageSource{MediaType: img.MediaType, Data: img.Data}
 	}
 	stats.reset()
 	answer, err := h.RunTurnWithImages(ctx, cmd.Query, images)
+	flush()
 	denied, files := stats.snapshot()
 	return wsclient.TurnReport{Answer: answer, Err: err, Denied: denied, FilesTouched: files}
 }
@@ -323,13 +256,87 @@ func touchedPath(toolName, input string) string {
 	return in.FilePath
 }
 
+// connectSink is the slice of *wsclient.Client the event forwarder uses.
+type connectSink interface {
+	Running() string
+	ConnContext() context.Context
+	SendEvent(ctx context.Context, turnID string, envelope json.RawMessage)
+	RequestApproval(turnID, callID, tool, input string)
+	Disconnect(reason string)
+}
+
+// connectBacklogCap bounds the forwarder's queue. A connected plane this far
+// behind has stopped reading: the backlog is discarded and the connection
+// dropped, taking the normal disconnect path. A var so tests can lower it.
+var connectBacklogCap = 100_000
+
 // forwardConnectEvents pumps bus events to the control plane until ctx is
 // done or the subscription closes. It tallies the turn (denials, files
 // touched), captures approval responders, and forwards events tagged with
-// the running turn's id — events with no running turn (teardown stragglers,
-// process-level events) are dropped by the client.
-func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsclient.Client, registry *approvals.Registry, stats *turnStats) {
+// the running turn's id. Delivery is lossless under a slow plane: a relay
+// moves ch into an unbounded eventQueue, so the bus subscription never
+// fills behind a blocked SendEvent (EventBus.Emit drops on full). A request
+// on flush rides the same queue as a marker, acked once every event queued
+// ahead of it is forwarded: the loop emits synchronously, so a finished
+// turn's events are all in ch by then and go out before its result. Events
+// with no running turn (emitted between turns, process-level events) are
+// dropped by the client.
+func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client connectSink, registry *approvals.Registry, stats *turnStats, flush <-chan chan struct{}) {
+	q := newEventQueue()
+	go relayConnectEvents(ctx, ch, flush, q, client, connectBacklogCap)
 	subagents := make(map[string]string)
+	for {
+		ev, ok := q.pop()
+		if !ok {
+			return
+		}
+		if m, ok := ev.(connectFlushMarker); ok {
+			close(m.ack)
+			continue
+		}
+		observeConnectEvent(ev, registry, subagents, stats)
+		switch ev.(type) {
+		case core.ModelChangedEvent, core.ThinkingChangedEvent:
+			// Echoes of plane commands, emitted between turns: not turn
+			// events, and they'd be tagged with whichever turn runs when
+			// they're forwarded. The plane already knows what it set.
+			continue
+		}
+		// An escalated call waits on the plane's decision, so the plane
+		// has to be asked: the event envelope below only narrates it.
+		if a, ok := ev.(core.ApprovalRequestedEvent); ok {
+			if turn := client.Running(); turn != "" {
+				client.RequestApproval(turn, a.CallID, a.ToolName, a.Input)
+			}
+		}
+		env := wire.ToWire(ev)
+		payload, err := json.Marshal(env)
+		if err != nil {
+			continue
+		}
+		if turn := client.Running(); turn != "" {
+			// SendEvent blocks on the connection's context — the
+			// lossless backpressure contract — so pass that, not the
+			// process ctx: a dead connection unblocks the pump.
+			client.SendEvent(client.ConnContext(), turn, payload)
+		}
+	}
+}
+
+// connectFlushMarker is a flush request queued behind the events it waits
+// for; the forwarder closes ack when it pops it. Never leaves the process.
+type connectFlushMarker struct {
+	core.BaseEvent
+	ack chan struct{}
+}
+
+// relayConnectEvents moves bus events into q without ever blocking on the
+// plane, and turns flush requests into queue markers after draining what ch
+// already holds. A backlog past limit is discarded and the connection
+// dropped. It closes q when ctx is done or ch closes, ending the
+// forwarder once the backlog is out.
+func relayConnectEvents(ctx context.Context, ch <-chan core.Event, flush <-chan chan struct{}, q *eventQueue, client connectSink, limit int) {
+	defer q.close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -338,25 +345,43 @@ func forwardConnectEvents(ctx context.Context, ch <-chan core.Event, client *wsc
 			if !ok {
 				return
 			}
-			observeConnectEvent(ev, registry, subagents, stats)
-			// An escalated call waits on the plane's decision, so the plane
-			// has to be asked: the event envelope below only narrates it.
-			if a, ok := ev.(core.ApprovalRequestedEvent); ok {
-				if turn := client.Running(); turn != "" {
-					client.RequestApproval(turn, a.CallID, a.ToolName, a.Input)
-				}
+			q.push(ev)
+		case ack := <-flush:
+			open := drainConnectEvents(ch, q)
+			q.push(connectFlushMarker{ack: ack})
+			if !open {
+				return
 			}
-			env := wire.ToWire(ev)
-			payload, err := json.Marshal(env)
-			if err != nil {
-				continue
+		}
+		if q.len() > limit {
+			discardConnectBacklog(q)
+			client.Disconnect(fmt.Sprintf("event backlog over %d; plane not reading", limit))
+		}
+	}
+}
+
+// discardConnectBacklog drops every queued event, releasing any flush
+// waiting in it so its turn can report.
+func discardConnectBacklog(q *eventQueue) {
+	for _, ev := range q.drain() {
+		if m, ok := ev.(connectFlushMarker); ok {
+			close(m.ack)
+		}
+	}
+}
+
+// drainConnectEvents pushes every event currently buffered in ch onto q;
+// false when ch is closed.
+func drainConnectEvents(ch <-chan core.Event, q *eventQueue) bool {
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return false
 			}
-			if turn := client.Running(); turn != "" {
-				// SendEvent blocks on the connection's context — the
-				// lossless backpressure contract — so pass that, not the
-				// process ctx: a dead connection unblocks the pump.
-				client.SendEvent(client.ConnContext(), turn, payload)
-			}
+			q.push(ev)
+		default:
+			return true
 		}
 	}
 }

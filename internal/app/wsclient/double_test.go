@@ -220,7 +220,6 @@ func handlersFor(t *testing.T) (Handlers, *handlerRecorder) {
 			return TurnReport{Err: ctx.Err()}
 		},
 		Steer:   func(message string) error { rec.steerCalled(message); return nil },
-		Cancel:  func() { rec.cancelCalled() },
 		Approve: func(callID string, approved bool, glob, _ string) { rec.approveCalled(callID, approved, glob) },
 		SetModel: func(model string) error {
 			rec.setModelCalled(model)
@@ -238,7 +237,6 @@ type handlerRecorder struct {
 	mu        sync.Mutex
 	queries   []Query
 	steers    []string
-	cancels   int
 	setModels []string
 	thinkings []bool
 	approves  []struct {
@@ -257,12 +255,6 @@ func (r *handlerRecorder) runCalled(cmd *Query) {
 func (r *handlerRecorder) steerCalled(m string) {
 	r.mu.Lock()
 	r.steers = append(r.steers, m)
-	r.mu.Unlock()
-}
-
-func (r *handlerRecorder) cancelCalled() {
-	r.mu.Lock()
-	r.cancels++
 	r.mu.Unlock()
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,8 +12,8 @@ import (
 	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/api/approvals"
+	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/successr-ai/tenzing-agent-harness/internal/app"
-	"github.com/successr-ai/tenzing-agent-harness/internal/app/wsclient"
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/internal/core"
 	"github.com/successr-ai/tenzing-agent-harness/internal/features/permissions"
@@ -179,6 +180,175 @@ func TestObserveConnectEventFilesTouched(t *testing.T) {
 	}
 }
 
+// fakeConnectSink records the envelope types forwarded for a running turn.
+// A non-nil gate stalls every SendEvent until it closes (a slow plane).
+type fakeConnectSink struct {
+	gate        chan struct{}
+	mu          sync.Mutex
+	types       []string
+	disconnects int
+}
+
+func (s *fakeConnectSink) Running() string                   { return "q1" }
+func (s *fakeConnectSink) ConnContext() context.Context      { return context.Background() }
+func (s *fakeConnectSink) RequestApproval(_, _, _, _ string) {}
+func (s *fakeConnectSink) Disconnect(string) {
+	s.mu.Lock()
+	s.disconnects++
+	s.mu.Unlock()
+}
+func (s *fakeConnectSink) SendEvent(_ context.Context, _ string, envelope json.RawMessage) {
+	var env struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(envelope, &env)
+	if s.gate != nil {
+		<-s.gate
+	}
+	s.mu.Lock()
+	s.types = append(s.types, env.Type)
+	s.mu.Unlock()
+}
+
+// TestForwardConnectEventsFlushDrainsBeforeAck: a flush forwards and
+// tallies everything already queued before it acks, so the turn's result
+// can follow its events.
+func TestForwardConnectEventsFlushDrainsBeforeAck(t *testing.T) {
+	ch := make(chan core.Event, 16)
+	ch <- core.TurnStartedEvent{BaseEvent: core.NewBaseEvent(core.EventTurnStarted, ""), Query: "hi"}
+	ch <- core.ToolDeniedEvent{BaseEvent: core.NewBaseEvent(core.EventToolDenied, ""), ToolName: "Write"}
+	ch <- core.LoopStoppedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStopped, "")}
+	ch <- core.TurnCompletedEvent{BaseEvent: core.NewBaseEvent(core.EventTurnCompleted, ""), FinalAnswer: "done"}
+
+	sink := &fakeConnectSink{}
+	stats := newTurnStats()
+	flush := make(chan chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go forwardConnectEvents(ctx, ch, sink, approvals.NewRegistry(), stats, flush)
+
+	ack := make(chan struct{})
+	flush <- ack
+	select {
+	case <-ack:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush never acked")
+	}
+
+	sink.mu.Lock()
+	got := append([]string(nil), sink.types...)
+	sink.mu.Unlock()
+	want := []string{"turn.started", "tool.denied", "loop.stopped", "turn.completed"}
+	if !slices.Equal(got, want) {
+		t.Errorf("forwarded = %v, want %v", got, want)
+	}
+	if denied, _ := stats.snapshot(); denied != 1 {
+		t.Errorf("denied = %d, want 1", denied)
+	}
+}
+
+// TestForwardConnectEventsSkipsSettingsEvents: model.changed and
+// thinking.changed echo plane commands between turns — not turn events —
+// so they never go upstream, where they'd be tagged with whatever turn
+// happens to be running when forwarded.
+func TestForwardConnectEventsSkipsSettingsEvents(t *testing.T) {
+	ch := make(chan core.Event, 16)
+	ch <- core.ModelChangedEvent{BaseEvent: core.NewBaseEvent(core.EventModelChanged, ""), From: "a", To: "b"}
+	ch <- core.ThinkingChangedEvent{BaseEvent: core.NewBaseEvent(core.EventThinkingChanged, ""), Enabled: true}
+	ch <- core.TurnStartedEvent{BaseEvent: core.NewBaseEvent(core.EventTurnStarted, ""), Query: "hi"}
+
+	sink := &fakeConnectSink{}
+	flush := make(chan chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go forwardConnectEvents(ctx, ch, sink, approvals.NewRegistry(), newTurnStats(), flush)
+
+	ack := make(chan struct{})
+	flush <- ack
+	select {
+	case <-ack:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush never acked")
+	}
+	sink.mu.Lock()
+	got := append([]string(nil), sink.types...)
+	sink.mu.Unlock()
+	if want := []string{"turn.started"}; !slices.Equal(got, want) {
+		t.Errorf("forwarded = %v, want %v", got, want)
+	}
+}
+
+// TestForwardConnectEventsSlowPlaneNoDrops: a stalled plane must not back
+// the bus subscription up into EventBus.Emit's drop-on-full path; every
+// event is still forwarded, in order, once the plane catches up.
+func TestForwardConnectEventsSlowPlaneNoDrops(t *testing.T) {
+	bus := eventbus.NewEventBus()
+	ch := bus.Subscribe(16)
+	sink := &fakeConnectSink{gate: make(chan struct{})}
+	flush := make(chan chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go forwardConnectEvents(ctx, ch, sink, approvals.NewRegistry(), newTurnStats(), flush)
+
+	const n = 500
+	for i := range n {
+		bus.Emit(core.ToolDeniedEvent{BaseEvent: core.NewBaseEvent(core.EventToolDenied, ""), ToolName: "Write"})
+		if i%8 == 7 { // stay under the 16-slot buffer: only a stalled drain can overflow it
+			waitFor(t, "subscription drained while the plane is stalled", func() bool { return len(ch) == 0 })
+		}
+	}
+	close(sink.gate)
+
+	ack := make(chan struct{})
+	flush <- ack
+	select {
+	case <-ack:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush never acked")
+	}
+	sink.mu.Lock()
+	got := len(sink.types)
+	sink.mu.Unlock()
+	if got != n {
+		t.Errorf("forwarded %d events, want %d", got, n)
+	}
+}
+
+// TestForwardConnectEventsOverflowDisconnects: a backlog past the cap
+// means the plane has stopped reading. The forwarder discards the backlog
+// and drops the connection, and a flush caught in the discarded backlog
+// still acks, so the waiting turn can't hang.
+func TestForwardConnectEventsOverflowDisconnects(t *testing.T) {
+	defer func(n int) { connectBacklogCap = n }(connectBacklogCap)
+	connectBacklogCap = 10
+
+	ch := make(chan core.Event, 64)
+	ev := core.ToolDeniedEvent{BaseEvent: core.NewBaseEvent(core.EventToolDenied, ""), ToolName: "Write"}
+	sink := &fakeConnectSink{gate: make(chan struct{})}
+	defer close(sink.gate)
+	flush := make(chan chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go forwardConnectEvents(ctx, ch, sink, approvals.NewRegistry(), newTurnStats(), flush)
+
+	ch <- ev // the forwarder takes it and stalls in SendEvent
+	ack := make(chan struct{})
+	flush <- ack // queued behind the stalled send
+	for range 20 {
+		ch <- ev
+	}
+	select {
+	case <-ack:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush in the discarded backlog never acked")
+	}
+	waitFor(t, "disconnect", func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		return sink.disconnects == 1
+	})
+}
+
 // waitFor polls cond until true or the timeout elapses.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -190,70 +360,4 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for %s", what)
-}
-
-// TestConnectSerialQueue pins the FIFO + flush semantics of the
-// connect-mode turn queue.
-func TestConnectSerialQueue(t *testing.T) {
-	t.Run("second query waits for the first to finish", func(t *testing.T) {
-		release := make(chan struct{})
-		var mu sync.Mutex
-		var order []string
-		q := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
-			mu.Lock()
-			order = append(order, cmd.ID)
-			mu.Unlock()
-			if cmd.ID == "q1" {
-				<-release
-			}
-			return wsclient.TurnReport{Answer: cmd.ID}
-		})
-
-		go func() { _ = q.run(context.Background(), &wsclient.Query{ID: "q1"}) }()
-		waitFor(t, "q1 running", func() bool { return q.parked() == 1 })
-		done2 := make(chan struct{})
-		go func() { _ = q.run(context.Background(), &wsclient.Query{ID: "q2"}); close(done2) }()
-		waitFor(t, "q2 parked", func() bool { return q.parked() == 1 })
-
-		close(release)
-		waitFor(t, "both finished", func() bool {
-			mu.Lock()
-			defer mu.Unlock()
-			return len(order) == 2
-		})
-		mu.Lock()
-		defer mu.Unlock()
-		if order[0] != "q1" || order[1] != "q2" {
-			t.Errorf("order = %v, want [q1 q2]", order)
-		}
-	})
-
-	t.Run("flush makes waiters report cancelled", func(t *testing.T) {
-		block := make(chan struct{})
-		q := newConnectSerialQueue(func(ctx context.Context, cmd *wsclient.Query) wsclient.TurnReport {
-			<-block
-			return wsclient.TurnReport{}
-		})
-		done1 := make(chan struct{})
-		go func() { _ = q.run(context.Background(), &wsclient.Query{ID: "q1"}); close(done1) }()
-		// q1 must hold the slot before q2 is launched, or q2 may take it and
-		// q1 becomes the flushed waiter — then done2 never closes.
-		waitFor(t, "q1 running", func() bool { return q.parked() == 1 })
-		done2 := make(chan struct{})
-		var ctxErr error
-		go func() {
-			ctxErr = q.run(context.Background(), &wsclient.Query{ID: "q2"}).Err
-			close(done2)
-		}()
-
-		// q2 is parked; flush it like a cancel command would.
-		waitFor(t, "q2 parked", func() bool { return q.parked() == 1 })
-		q.flush()
-		<-done2
-		if ctxErr == nil {
-			t.Error("flushed waiter should report context.Canceled")
-		}
-		close(block)
-		<-done1
-	})
 }

@@ -23,7 +23,7 @@ func TestSendEventBlocksForLossless(t *testing.T) {
 	// Install a live turn + connection context, as the wiring would see
 	// mid-turn.
 	connCtx, connCancel := context.WithCancel(context.Background())
-	c.connCtx.set(connCtx)
+	c.connCtx.set(connCtx, connCancel)
 	c.mu.Lock()
 	c.currentID = "q1"
 	c.mu.Unlock()
