@@ -202,7 +202,7 @@ internal/
 │   │   ├── tool_bash.go                Shell command execution (120s timeout)
 │   │   ├── tool_edit.go                String replacement in file (tracker-verified, atomic write)
 │   │   ├── tool_glob.go                File pattern matching
-│   │   ├── tool_grep.go                Regex search across files (cap 500)
+│   │   ├── tool_grep.go                Regex search across files (bounded output)
 │   │   ├── tool_ls.go                  Directory listing (cap 500 entries)
 │   │   ├── tool_read.go                File read with line numbers (stamps tracker)
 │   │   └── tool_write.go               File create/overwrite (tracker-verified, atomic write, mkdir -p)
@@ -587,7 +587,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Read` | always | File contents | Line-numbered output, default 2000 lines; stamps the FileTracker |
 | `Edit` | always | String replace | Unique match required unless `replace_all`; rejects unread/stale files (tracker), atomic write under per-path lock |
 | `Write` | always | Create/overwrite file | mkdir -p parents; overwriting requires a prior Read (tracker); atomic write under per-path lock |
-| `Grep` | always | Regex search | Caps at 500 matches |
+| `Grep` | always | Regex search | Caps at 500 matches or 64 KB; lines cut at 300 bytes; skips `.git` and `node_modules` |
 | `Glob` | always | File patterns | Supports `**` wildcard |
 | `ls` | always | Directory listing | Sorted; dirs end with `/`, files show size; caps at 500 entries |
 | `TodoWrite` | always | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, replaces the store's plan |

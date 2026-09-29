@@ -16,7 +16,19 @@ import (
 
 const (
 	maxGrepMatches = 500
+	// maxGrepLineBytes bounds one match: minified files and source maps
+	// put megabytes on a single line.
+	maxGrepLineBytes = 300
+	// maxGrepBytes bounds the whole result so one search can't overflow
+	// the model's context.
+	maxGrepBytes = 64 << 10
 )
+
+// grepSkipDirs are never searched: VCS internals and dependency trees.
+var grepSkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+}
 
 var _ tooldef.Definition = (*GrepTool)(nil)
 
@@ -79,13 +91,14 @@ func (t *GrepTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 	includePattern := input.Include
 
 	var matches []string
-	capped := false
+	capped, sizeCapped := false, false
+	size := 0
 	err = filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if grepSkipDirs[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -109,7 +122,12 @@ func (t *GrepTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		lines := strings.Split(string(data), "\n")
 		for i, line := range lines {
 			if re.MatchString(line) {
-				matches = append(matches, fmt.Sprintf("%s:%d: %s", path, i+1, line))
+				match := fmt.Sprintf("%s:%d: %s", path, i+1, truncateLine(line))
+				if size += len(match) + 1; size > maxGrepBytes {
+					sizeCapped = true
+					return filepath.SkipAll
+				}
+				matches = append(matches, match)
 				if len(matches) >= maxGrepMatches {
 					capped = true
 					return filepath.SkipAll
@@ -126,10 +144,21 @@ func (t *GrepTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		return tooldef.NewToolResult("No matches."), nil
 	}
 	output := strings.Join(matches, "\n")
-	if capped {
+	switch {
+	case sizeCapped:
+		output += fmt.Sprintf("\n[truncated at %d KB]", maxGrepBytes>>10)
+	case capped:
 		output += fmt.Sprintf("\n[truncated at %d matches]", maxGrepMatches)
 	}
 	return tooldef.NewToolResult(output), nil
+}
+
+// truncateLine cuts line to maxGrepLineBytes on a rune boundary.
+func truncateLine(line string) string {
+	if len(line) <= maxGrepLineBytes {
+		return line
+	}
+	return strings.ToValidUTF8(line[:maxGrepLineBytes], "") + "…"
 }
 
 func isBinary(data []byte) bool {
