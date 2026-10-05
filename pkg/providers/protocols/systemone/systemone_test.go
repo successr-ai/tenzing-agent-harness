@@ -41,8 +41,9 @@ func TestEvaluateRequestAndResponse(t *testing.T) {
 	var auth, contentType string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != evaluatePath {
-			t.Errorf("got %s %s, want POST %s", r.Method, r.URL.Path, evaluatePath)
+		// The URL is used exactly as given: nothing appended.
+		if r.Method != http.MethodPost || r.URL.Path != "/api/alpha/decisions" {
+			t.Errorf("got %s %s, want POST /api/alpha/decisions", r.Method, r.URL.Path)
 		}
 		auth = r.Header.Get("Authorization")
 		contentType = r.Header.Get("Content-Type")
@@ -55,7 +56,7 @@ func TestEvaluateRequestAndResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"))
+	client, err := NewClient(WithAPIKey("k"), WithURL(srv.URL+"/api/alpha/decisions"), WithModel("jev-latest"))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestEvaluateErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"),
+			client, err := NewClient(WithAPIKey("k"), WithURL(srv.URL+"/api/alpha/decisions"), WithModel("jev-latest"),
 				WithRetryBackoff(ratelimit.RetryBackoff{
 					MaxRetries:  tt.attempts,
 					BaseBackoff: time.Millisecond,
@@ -171,13 +172,13 @@ func TestEvaluateErrors(t *testing.T) {
 }
 
 func TestNewClientRequiresAPIKeyAndEvaluateRequiresQuestions(t *testing.T) {
-	key, url, model := WithAPIKey("k"), WithBaseURL("http://x"), WithModel("jev-latest")
+	key, url, model := WithAPIKey("k"), WithURL("http://x"), WithModel("jev-latest")
 	for _, tt := range []struct {
 		name, want string
 		opts       []ClientOption
 	}{
 		{name: "no key", want: "API key is required", opts: []ClientOption{url, model}},
-		{name: "no base URL", want: "base URL is required", opts: []ClientOption{key, model}},
+		{name: "no URL", want: "URL is required", opts: []ClientOption{key, model}},
 		{name: "no model", want: "model is required", opts: []ClientOption{key, url}},
 	} {
 		if _, err := NewClient(tt.opts...); err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -216,7 +217,7 @@ func TestRequestModelOverridesClientModel(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel(tt.clientModel))
+			client, err := NewClient(WithAPIKey("k"), WithURL(srv.URL+"/api/alpha/decisions"), WithModel(tt.clientModel))
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
@@ -268,7 +269,7 @@ func TestStructuredScoreLevelsRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"))
+	client, err := NewClient(WithAPIKey("k"), WithURL(srv.URL+"/api/alpha/decisions"), WithModel("jev-latest"))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

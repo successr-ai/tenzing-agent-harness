@@ -1,5 +1,5 @@
 // Package systemone is a client for TypeSafe's System One evaluation
-// endpoint (POST /v1/systemone), served by the Jev models.
+// endpoint, served by the Jev models. It POSTs to the URL it is given, as is.
 //
 // It implements common.SystemOne, the decision counterpart to common.LLM:
 // one state plus a map of typed questions in, one calibrated typed answer per
@@ -26,8 +26,6 @@ import (
 const (
 	// ProviderName identifies this protocol in errors and logs.
 	ProviderName = "typesafe"
-
-	evaluatePath = "/v1/systemone"
 )
 
 // Token budgets for one request, documented for jev-1.13 and not sent on the
@@ -70,7 +68,7 @@ type ClientOption func(*clientOptions)
 
 type clientOptions struct {
 	apiKey       string
-	baseURL      string
+	url          string
 	model        string
 	httpClient   *http.Client
 	retryBackoff *ratelimit.RetryBackoff
@@ -82,10 +80,11 @@ func WithAPIKey(key string) ClientOption {
 	return func(o *clientOptions) { o.apiKey = key }
 }
 
-// WithBaseURL sets the endpoint base, stopping before /v1 (the client appends
-// /v1/systemone). Required — there is no default host.
-func WithBaseURL(baseURL string) ClientOption {
-	return func(o *clientOptions) { o.baseURL = baseURL }
+// WithURL sets the full endpoint URL requests are POSTed to, used exactly as
+// given — nothing is appended (e.g. https://openrouter.ai/api/alpha/decisions
+// or https://api.typesafe.ai/v1/systemone). Required — there is no default.
+func WithURL(url string) ClientOption {
+	return func(o *clientOptions) { o.url = url }
 }
 
 // WithModel sets the model every request names. Required — there is no
@@ -113,7 +112,7 @@ func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
 // use.
 type Client struct {
 	apiKey       string
-	baseURL      string
+	url          string
 	model        string
 	httpClient   *http.Client
 	retryBackoff *ratelimit.RetryBackoff
@@ -121,7 +120,7 @@ type Client struct {
 
 var _ common.SystemOne = (*Client)(nil)
 
-// NewClient builds a client. WithAPIKey, WithBaseURL and WithModel are all
+// NewClient builds a client. WithAPIKey, WithURL and WithModel are all
 // required: the caller always names where requests go and which model answers.
 func NewClient(opts ...ClientOption) (*Client, error) {
 	backoff := ratelimit.NewDefaultBackoff()
@@ -135,15 +134,15 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	if o.apiKey == "" {
 		return nil, fmt.Errorf("systemone: API key is required (use WithAPIKey)")
 	}
-	if o.baseURL == "" {
-		return nil, fmt.Errorf("systemone: base URL is required (use WithBaseURL)")
+	if o.url == "" {
+		return nil, fmt.Errorf("systemone: URL is required (use WithURL)")
 	}
 	if o.model == "" {
 		return nil, fmt.Errorf("systemone: model is required (use WithModel)")
 	}
 	return &Client{
 		apiKey:       o.apiKey,
-		baseURL:      o.baseURL,
+		url:          o.url,
 		model:        o.model,
 		httpClient:   o.httpClient,
 		retryBackoff: o.retryBackoff,
@@ -205,7 +204,7 @@ func (c *Client) evaluateWithRetries(ctx context.Context, body []byte) (common.E
 func (c *Client) evaluateOnce(ctx context.Context, body []byte) (common.EvaluationResponse, error) {
 	var zero common.EvaluationResponse
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+evaluatePath, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return zero, fmt.Errorf("systemone: building request: %w", err)
 	}

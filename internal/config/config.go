@@ -245,7 +245,7 @@ type ConnectSection struct {
 var ProviderTypes = []string{"anthropic", "ollama", DefaultProviderType, SystemOneProviderType}
 
 // SystemOneProviderType is the System One evaluation protocol
-// (POST <url>/v1/systemone), served by TypeSafe and by OpenRouter. It is
+// (POST to url, the full endpoint, as given), served by TypeSafe and by OpenRouter. It is
 // named after the protocol rather than either vendor, like the other three.
 // Models behind it are decision models, declared under models.systemone: and
 // built as common.SystemOne — never as common.LLM.
@@ -426,12 +426,6 @@ func ValidateProviders(ps []Provider) error {
 		// default — TypeSafe and OpenRouter both serve it.
 		case (p.Type == DefaultProviderType || p.Type == SystemOneProviderType) && p.URL == "":
 			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, p.Type)
-		// The client appends /v1/systemone itself, so the url stops before
-		// /v1. Copying an openai_compat base (".../api/v1") is the easy
-		// mistake, and it produces /v1/v1/systemone and a 404 at runtime.
-		case p.Type == SystemOneProviderType && strings.HasSuffix(strings.TrimSuffix(p.URL, "/"), "/v1"):
-			return fmt.Errorf("providers[%d] (%s): url must stop before /v1 for %s providers — the client appends /v1/systemone (use %q)",
-				i, p.Name, SystemOneProviderType, strings.TrimSuffix(strings.TrimSuffix(p.URL, "/"), "/v1"))
 		case seen[p.Name]:
 			return fmt.Errorf("providers[%d]: duplicate provider name %q", i, p.Name)
 		}

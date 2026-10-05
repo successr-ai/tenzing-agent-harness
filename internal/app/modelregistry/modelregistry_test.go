@@ -16,7 +16,7 @@ var testProviders = []config.Provider{
 	{Name: "cloud", Type: "ollama", URL: "https://ollama.com/", APIKey: "sk-cloud"},
 	{Name: "claude", Type: "anthropic", URL: "https://api.anthropic.com"},
 	{Name: "typesafe", Type: config.SystemOneProviderType, URL: "https://api.typesafe.ai", APIKey: "sk-ts"},
-	{Name: "openrouter-jev", Type: config.SystemOneProviderType, URL: "https://openrouter.ai/api", APIKey: "sk-or"},
+	{Name: "openrouter-jev", Type: config.SystemOneProviderType, URL: "https://openrouter.ai/api/alpha/decisions", APIKey: "sk-or"},
 }
 
 // testRegistry builds a registry over testProviders plus the given entries,
@@ -307,7 +307,7 @@ func TestResolveSystemOne(t *testing.T) {
 	}
 	// Name is the wire id, and the provider travels with it: the OpenRouter
 	// entry must not pick up TypeSafe's endpoint.
-	if rs.Name != "typesafe/jev-1.13" || rs.Provider.URL != "https://openrouter.ai/api" {
+	if rs.Name != "typesafe/jev-1.13" || rs.Provider.URL != "https://openrouter.ai/api/alpha/decisions" {
 		t.Errorf("resolved = %+v", rs)
 	}
 	inline, err := reg.ResolveSystemOne(`{"provider":"openrouter-jev","model_name":"typesafe/jev-1.14"}`)

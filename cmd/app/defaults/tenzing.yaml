@@ -58,13 +58,12 @@ providers:
     api_key: "$OLLAMA_API_KEY"
 
   # A System One backend. TypeSafe serves the endpoint directly; OpenRouter
-  # mirrors the same route, so either works — only url and model_name change.
-  # The url stops before /v1: the client appends /v1/systemone itself, which
-  # is why this is NOT the same base as an openai_compat OpenRouter entry
-  # (that one ends in /api/v1).
+  # serves the same request body, so either works — only url and model_name
+  # change. url is the full endpoint, used exactly as given (nothing is
+  # appended): https://api.typesafe.ai/v1/systemone for TypeSafe.
   # - name: openrouter-jev
   #   type: systemone
-  #   url: https://openrouter.ai/api
+  #   url: https://openrouter.ai/api/alpha/decisions
   #   api_key: "$OPENROUTER_API_KEY"
 
 # name is the local alias config and --model refer to; model_name is the id

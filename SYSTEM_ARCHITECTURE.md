@@ -961,7 +961,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## 19. Public API — `pkg/tenzing`
 
-A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); The `pkg/common` type layer and `pkg/models` definitions are not re-exported — consumers import those packages directly. New public surface added anywhere below must be re-exported here in the same change. The one piece with logic is `systemone.go`: `CallSystemOne(ctx, SystemOneCall{APIKey, BaseURL, Model, State, Questions})`, a one-off System One request with every connection field required (no default endpoint or model), plus the `pkg/common` question/answer aliases it takes and returns.
+A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); The `pkg/common` type layer and `pkg/models` definitions are not re-exported — consumers import those packages directly. New public surface added anywhere below must be re-exported here in the same change. The one piece with logic is `systemone.go`: `CallSystemOne(ctx, SystemOneCall{APIKey, URL, Model, State, Questions})`, a one-off System One request with every connection field required (no default endpoint or model), plus the `pkg/common` question/answer aliases it takes and returns.
 
 ## 20. Extending the System
 

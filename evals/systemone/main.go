@@ -18,7 +18,7 @@ import (
 func main() {
 	var (
 		casesPath = flag.String("cases", defaultCasesPath(), "fixture file")
-		baseURL   = flag.String("base-url", "https://openrouter.ai/api", "System One base URL (stops before /v1)")
+		endpoint  = flag.String("url", "https://openrouter.ai/api/alpha/decisions", "System One endpoint URL, used as given")
 		model     = flag.String("model", "typesafe/jev-1.13", "model id to measure")
 		keyEnv    = flag.String("key-env", "OPENROUTER_API_KEY", "environment variable holding the API key")
 		irrevAsk  = flag.Float64("irreversible-ask", systemone.DefaultIrreversibleAsk, "irreversibility probability above which a call asks")
@@ -39,7 +39,7 @@ func main() {
 		}
 	}
 	if *advisor {
-		client, err := newClient(*baseURL, *model, *keyEnv)
+		client, err := newClient(*endpoint, *model, *keyEnv)
 		if err == nil {
 			err = runAdvisor(defaultAdvisorCasesPath(), client, *model, *consult, *verbose, qs)
 		}
@@ -50,7 +50,7 @@ func main() {
 		return
 	}
 	th := thresholds{irrevAsk: *irrevAsk, secretsAsk: *secretAsk}
-	if err := run(*casesPath, *baseURL, *model, *keyEnv, th, *verbose, qs); err != nil {
+	if err := run(*casesPath, *endpoint, *model, *keyEnv, th, *verbose, qs); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -105,18 +105,18 @@ func (r result) margin(th thresholds) float64 {
 	}
 }
 
-func run(casesPath, baseURL, model, keyEnv string, th thresholds, verbose bool, qs questionSet) error {
+func run(casesPath, endpoint, model, keyEnv string, th thresholds, verbose bool, qs questionSet) error {
 	cases, err := LoadCases(casesPath)
 	if err != nil {
 		return err
 	}
-	client, err := newClient(baseURL, model, keyEnv)
+	client, err := newClient(endpoint, model, keyEnv)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("%d cases against %s (%s)\nquestions: %s\nthresholds: irreversible ask>%.2f · secrets ask>%.2f\n\n",
-		len(cases), model, baseURL, qs.Name, th.irrevAsk, th.secretsAsk)
+		len(cases), model, endpoint, qs.Name, th.irrevAsk, th.secretsAsk)
 
 	results := make([]result, len(cases))
 	start := time.Now()
@@ -146,14 +146,14 @@ func run(casesPath, baseURL, model, keyEnv string, th thresholds, verbose bool, 
 	return report(results, th, verbose)
 }
 
-func newClient(baseURL, model, keyEnv string) (*sonepkg.Client, error) {
+func newClient(endpoint, model, keyEnv string) (*sonepkg.Client, error) {
 	key := os.Getenv(keyEnv)
 	if key == "" {
 		return nil, fmt.Errorf("%s is not set; the eval calls the real endpoint", keyEnv)
 	}
 	return sonepkg.NewClient(
 		sonepkg.WithAPIKey(key),
-		sonepkg.WithBaseURL(baseURL),
+		sonepkg.WithURL(endpoint),
 		sonepkg.WithModel(model))
 }
 

@@ -580,7 +580,7 @@ func TestRootCmdConfigFile(t *testing.T) {
 func TestRootCmdListsSystemOneModels(t *testing.T) {
 	const yaml = "providers:\n" +
 		"  - name: local\n    type: ollama\n    url: http://localhost:11434\n" +
-		"  - name: openrouter-jev\n    type: systemone\n    url: https://openrouter.ai/api\n" +
+		"  - name: openrouter-jev\n    type: systemone\n    url: https://openrouter.ai/api/alpha/decisions\n" +
 		"models:\n" +
 		"  llm:\n    - name: alpha\n      provider: local\n      model_name: glm-5.3\n" +
 		"  systemone:\n    - name: jev\n      provider: openrouter-jev\n      model_name: typesafe/jev-1.13\n" +

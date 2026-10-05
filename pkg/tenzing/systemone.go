@@ -12,10 +12,10 @@ import (
 // field is required: there is no default endpoint or model.
 type SystemOneCall struct {
 	APIKey string
-	// BaseURL stops before /v1 — the client appends /v1/systemone. For
-	// OpenRouter that is https://openrouter.ai/api, not .../api/v1.
-	BaseURL string
-	Model   string
+	// URL is the full endpoint, used exactly as given — nothing is appended,
+	// e.g. https://openrouter.ai/api/alpha/decisions.
+	URL   string
+	Model string
 	// State is what the questions are asked about: a string, a JSON object,
 	// or an array of text values.
 	State common.State
@@ -44,7 +44,7 @@ var (
 func CallSystemOne(ctx context.Context, c SystemOneCall) (SystemOneResponse, error) {
 	client, err := s1client.NewClient(
 		s1client.WithAPIKey(c.APIKey),
-		s1client.WithBaseURL(c.BaseURL),
+		s1client.WithURL(c.URL),
 		s1client.WithModel(c.Model))
 	if err != nil {
 		return SystemOneResponse{}, fmt.Errorf("CallSystemOne: %w", err)

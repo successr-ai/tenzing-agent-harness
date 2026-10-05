@@ -107,7 +107,7 @@ func buildSystemOne(rs ResolvedSystemOne) (common.SystemOne, error) {
 	}
 	return systemone.NewClient(
 		systemone.WithAPIKey(rs.Provider.APIKey),
-		systemone.WithBaseURL(rs.Provider.URL),
+		systemone.WithURL(rs.Provider.URL),
 		systemone.WithModel(rs.Name))
 }
 

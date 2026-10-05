@@ -103,7 +103,7 @@ No harness needed. Every connection field is required — there is no default en
 ```go
 resp, err := tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{
 	APIKey:  os.Getenv("OPENROUTER_API_KEY"),
-	BaseURL: "https://openrouter.ai/api", // stops before /v1
+	URL:     "https://openrouter.ai/api/alpha/decisions", // full endpoint, used as given
 	Model:   "typesafe/jev-1.13",
 	State:   "rm -rf ./build",
 	Questions: map[string]tenzing.Question{
@@ -263,9 +263,9 @@ providers:                             # required: the backends models are serve
     extra:                             # openai_compat only; injected into every request body
       provider.sort: throughput
 
-  - name: openrouter-jev               # System One backend; url stops before /v1
-    type: systemone                    # the client appends /v1/systemone itself
-    url: https://openrouter.ai/api
+  - name: openrouter-jev               # System One backend; url is the full
+    type: systemone                    # endpoint, used exactly as given
+    url: https://openrouter.ai/api/alpha/decisions
     api_key: "$OPENROUTER_API_KEY"
 
 models:                                # required: the models that can be selected
@@ -368,7 +368,7 @@ systemone:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Unique label, referenced by `models[].provider`. Also how the backend identifies itself in logs and errors. |
-| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` is required and stops before `/v1`, which the client appends). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
+| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` is required and is the full endpoint, used exactly as given). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
 | `url` | URL | required for `openai_compat` | Endpoint. Required for `openai_compat`, which has nothing to default to. Optional for `anthropic` (defaults to `https://api.anthropic.com`) and `ollama` (defaults to **`https://ollama.com/`, the cloud endpoint** — set it explicitly to `http://localhost:11434` for a local daemon). |
 | `api_key` | string | unset | Omitted or empty means no auth (a local Ollama). Reference the environment rather than writing the secret: `api_key: "$OLLAMA_API_KEY"`. |
 | `extra` | map | unset | Fields injected into every request body, by dotted path (`provider.sort: throughput`). `openai_compat` only — silently ignored on the other types. Values are unvalidated: a bad key fails at the provider on the first request, not at startup. One key is reserved: `max_completion_tokens: true` renames the token-limit parameter instead of adding a field, which is what current OpenAI models require. |

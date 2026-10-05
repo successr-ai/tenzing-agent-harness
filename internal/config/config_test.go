@@ -209,7 +209,6 @@ func TestLoad_Errors(t *testing.T) {
 		{"llm on systemone provider", soProvYAML + "models:\n  llm:\n    - name: n\n      provider: so\n      model_name: m\n", "declare this model under models.systemone:"},
 		{"alias collides across kinds", soProvYAML + provYAML[len("providers:\n"):] + "models:\n  llm:\n    - name: dup\n      provider: p\n      model_name: m\n  systemone:\n    - name: dup\n      provider: so\n      model_name: jev-latest\n", "duplicate model name"},
 		{"systemone without url", "providers:\n  - name: so\n    type: systemone\n", "url is required for systemone providers"},
-		{"systemone url keeps v1", "providers:\n  - name: so\n    type: systemone\n    url: https://openrouter.ai/api/v1\n", "url must stop before /v1"},
 
 		// systemone_model: and its block.
 		{"systemone block without the ref", soJevYAML + "systemone:\n  recent_messages: 2\n", "has no effect without systemone_model"},

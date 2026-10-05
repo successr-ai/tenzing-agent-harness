@@ -17,12 +17,12 @@ The interface and every type it names (`State`, `Question`, `Answer`, `Evaluatio
 ## Protocol
 
 ```http
-POST <base>/v1/systemone
+POST <url>
 Authorization: Bearer <API_KEY>
 Content-Type: application/json
 ```
 
-`<base>` is `WithBaseURL` — required, there is no default host. The client appends `/v1/systemone`, so the base stops **before** `/v1`.
+`<url>` is `WithURL` — the full endpoint, required, and used **exactly as given**: the client appends nothing to it. There is no default.
 
 ```json
 { "state": "…", "model": "jev-latest", "questions": { "<id>": { "type": …, "instructions": …, "criteria": … } } }
@@ -54,16 +54,16 @@ Two consequences for the Go types: `Question.Instructions` and `Question.Criteri
 
 | | TypeSafe | OpenRouter |
 | --- | --- | --- |
-| `WithBaseURL` | `https://api.typesafe.ai` | `https://openrouter.ai/api` |
+| `WithURL` | `https://api.typesafe.ai/v1/systemone` | `https://openrouter.ai/api/alpha/decisions` (OpenRouter's recommended endpoint) |
 | `WithModel` | `jev-latest`, `jev-preview`, or a pinned `jev-1.13.0` | `typesafe/jev-1.13` |
 | Key | `$TYPESAFE_API_KEY` | `$OPENROUTER_API_KEY` |
 | Auth | `Authorization: Bearer` | same |
 | Context | 64k per request, 32k state + longest question (the package constants) | 32000 reported, `max_completion_tokens` 28800 |
 | Price | \$0.042 / Mtok input, output free | `prompt` 0.000000042/token, `completion` 0 — the same rate |
 
-Same route, same body, same answer shapes; only the base URL and the model id differ, and both are required client options — the client defaults neither, so every caller names its backend and model. Nothing in this package is vendor-specific.
+Same body, same answer shapes; only the URL and the model id differ, and both are required client options — the client defaults neither, so every caller names its backend and model. Nothing in this package is vendor-specific.
 
-**The base-URL trap:** OpenRouter's OpenAI-compatible base is `https://openrouter.ai/api/v1`, and the natural instinct is to reuse it here. Don't — this client appends `/v1/systemone`, so that base produces `/api/v1/v1/systemone` and a 404. The System One base is `https://openrouter.ai/api`.
+**Pass the whole endpoint.** The client never builds a path, so whatever the backend documents is what goes in `WithURL` / `url:`. OpenRouter's OpenAI-compatible base (`https://openrouter.ai/api/v1`) is not a System One endpoint.
 
 OpenRouter facts worth knowing when checking their side: the model is absent from the default `GET /api/v1/models` catalog (its modality is `text->decisions`, not a chat modality), so use `GET /api/v1/models/typesafe/jev-1.13/endpoints` instead — that is where the context, pricing and the dated endpoint tag (`typesafe/jev-1.13-20260917`) come from. `supported_parameters` is empty: there are no sampling knobs to pass, which is what a decision model looks like on a catalog built for chat models. Their model page is <https://openrouter.ai/typesafe/jev-1.13>.
 
@@ -74,7 +74,7 @@ var judge common.SystemOne
 
 judge, err := systemone.NewClient(
     systemone.WithAPIKey(key),
-    systemone.WithBaseURL("https://api.typesafe.ai"),
+    systemone.WithURL("https://api.typesafe.ai/v1/systemone"),
     systemone.WithModel("jev-latest"))
 
 resp, err := judge.Evaluate(ctx, common.EvaluationRequest{
@@ -97,13 +97,13 @@ For OpenRouter, the same call with OpenRouter's base and model id:
 ```go
 judge, err := systemone.NewClient(
     systemone.WithAPIKey(key),
-    systemone.WithBaseURL("https://openrouter.ai/api"),
+    systemone.WithURL("https://openrouter.ai/api/alpha/decisions"),
     systemone.WithModel("typesafe/jev-1.13"))
 ```
 
-For a one-off call without holding a client, `pkg/tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{APIKey, BaseURL, Model, State, Questions})` builds one and calls `Evaluate`; same three required fields.
+For a one-off call without holding a client, `pkg/tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{APIKey, URL, Model, State, Questions})` builds one and calls `Evaluate`; same three required fields.
 
-Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey`, `WithBaseURL` and `WithModel` (all three required — `NewClient` errors without any of them; nothing in `pkg/` reads env vars), plus `WithHTTPClient`, `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
+Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey`, `WithURL` and `WithModel` (all three required — `NewClient` errors without any of them; nothing in `pkg/` reads env vars), plus `WithHTTPClient`, `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
 
 Deliberately absent, matching the other protocol packages only where it earns its place: no `WithRateLimit`/`WithMaxConcurrency` wrap (`ratelimit.Wrap` decorates `common.LLM`, which this is not), no `GET /v1/models` call, no streaming. Add them when a caller needs them.
 
