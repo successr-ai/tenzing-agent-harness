@@ -187,6 +187,8 @@ type fakeConnectSink struct {
 	mu          sync.Mutex
 	types       []string
 	disconnects int
+	// sending counts SendEvent calls entered, stalled or not.
+	sending int
 }
 
 func (s *fakeConnectSink) Running() string                   { return "q1" }
@@ -202,6 +204,9 @@ func (s *fakeConnectSink) SendEvent(_ context.Context, _ string, envelope json.R
 		Type string `json:"type"`
 	}
 	_ = json.Unmarshal(envelope, &env)
+	s.mu.Lock()
+	s.sending++
+	s.mu.Unlock()
 	if s.gate != nil {
 		<-s.gate
 	}
@@ -332,6 +337,13 @@ func TestForwardConnectEventsOverflowDisconnects(t *testing.T) {
 	go forwardConnectEvents(ctx, ch, sink, approvals.NewRegistry(), newTurnStats(), flush)
 
 	ch <- ev // the forwarder takes it and stalls in SendEvent
+	// Wait for the stall: an event still queued would leave 21 items, which
+	// overflows the cap twice and disconnects twice.
+	waitFor(t, "stalled send", func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		return sink.sending == 1
+	})
 	ack := make(chan struct{})
 	flush <- ack // queued behind the stalled send
 	for range 20 {
