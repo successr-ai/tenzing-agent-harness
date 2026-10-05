@@ -310,6 +310,10 @@ func TestResolveSystemOne(t *testing.T) {
 	if rs.Name != "typesafe/jev-1.13" || rs.Provider.URL != "https://openrouter.ai/api" {
 		t.Errorf("resolved = %+v", rs)
 	}
+	inline, err := reg.ResolveSystemOne(`{"provider":"openrouter-jev","model_name":"typesafe/jev-1.14"}`)
+	if err != nil || inline.Name != "typesafe/jev-1.14" || inline.Provider.Name != "openrouter-jev" {
+		t.Errorf("inline = %+v, %v", inline, err)
+	}
 	if got := reg.SystemOneNames(); len(got) != 2 || got[0] != "jev" || got[1] != "jev-or" {
 		t.Errorf("SystemOneNames = %v", got)
 	}
@@ -322,6 +326,9 @@ func TestResolveSystemOne(t *testing.T) {
 		{name: "System One ref as chat", ref: "jev", wantErr: "is a System One model"},
 		{name: "unknown System One", ref: "nope", systemOne: true, wantErr: "not declared in models.systemone:"},
 		{name: "unknown chat", ref: "nope", wantErr: "not declared in models.llm:"},
+		{name: "inline System One on chat provider", ref: `{"provider":"local","model_name":"jev"}`, systemOne: true, wantErr: `has type "ollama"`},
+		{name: "inline System One unknown provider", ref: `{"provider":"nope","model_name":"jev"}`, systemOne: true, wantErr: "not declared in providers:"},
+		{name: "inline System One no model_name", ref: `{"provider":"typesafe"}`, systemOne: true, wantErr: "model_name is required"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var err error

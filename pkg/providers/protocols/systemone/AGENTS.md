@@ -22,7 +22,7 @@ Authorization: Bearer <API_KEY>
 Content-Type: application/json
 ```
 
-`<base>` is `WithBaseURL`, defaulting to `DefaultBaseURL` (`https://api.typesafe.ai`). The client appends `/v1/systemone`, so the base stops **before** `/v1`.
+`<base>` is `WithBaseURL` — required, there is no default host. The client appends `/v1/systemone`, so the base stops **before** `/v1`.
 
 ```json
 { "state": "…", "model": "jev-latest", "questions": { "<id>": { "type": …, "instructions": …, "criteria": … } } }
@@ -54,14 +54,14 @@ Two consequences for the Go types: `Question.Instructions` and `Question.Criteri
 
 | | TypeSafe | OpenRouter |
 | --- | --- | --- |
-| `WithBaseURL` | `https://api.typesafe.ai` (default) | `https://openrouter.ai/api` |
+| `WithBaseURL` | `https://api.typesafe.ai` | `https://openrouter.ai/api` |
 | `WithModel` | `jev-latest`, `jev-preview`, or a pinned `jev-1.13.0` | `typesafe/jev-1.13` |
 | Key | `$TYPESAFE_API_KEY` | `$OPENROUTER_API_KEY` |
 | Auth | `Authorization: Bearer` | same |
 | Context | 64k per request, 32k state + longest question (the package constants) | 32000 reported, `max_completion_tokens` 28800 |
 | Price | \$0.042 / Mtok input, output free | `prompt` 0.000000042/token, `completion` 0 — the same rate |
 
-Same route, same body, same answer shapes; only the base URL and the model id differ, both of which are already client options. Nothing in this package is vendor-specific.
+Same route, same body, same answer shapes; only the base URL and the model id differ, and both are required client options — the client defaults neither, so every caller names its backend and model. Nothing in this package is vendor-specific.
 
 **The base-URL trap:** OpenRouter's OpenAI-compatible base is `https://openrouter.ai/api/v1`, and the natural instinct is to reuse it here. Don't — this client appends `/v1/systemone`, so that base produces `/api/v1/v1/systemone` and a 404. The System One base is `https://openrouter.ai/api`.
 
@@ -72,7 +72,10 @@ OpenRouter facts worth knowing when checking their side: the model is absent fro
 ```go
 var judge common.SystemOne
 
-judge, err := systemone.NewClient(systemone.WithAPIKey(key))
+judge, err := systemone.NewClient(
+    systemone.WithAPIKey(key),
+    systemone.WithBaseURL("https://api.typesafe.ai"),
+    systemone.WithModel("jev-latest"))
 
 resp, err := judge.Evaluate(ctx, common.EvaluationRequest{
     State: map[string]any{"message": text, "order_id": "A-104"},
@@ -89,7 +92,7 @@ resp, err := judge.Evaluate(ctx, common.EvaluationRequest{
 if resp.Answers["department"].Confidence < 0.5 { /* route to a human */ }
 ```
 
-For OpenRouter, the same call plus two options:
+For OpenRouter, the same call with OpenRouter's base and model id:
 
 ```go
 judge, err := systemone.NewClient(
@@ -98,7 +101,9 @@ judge, err := systemone.NewClient(
     systemone.WithModel("typesafe/jev-1.13"))
 ```
 
-Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey` (required — nothing in `pkg/` reads env vars), `WithBaseURL`, `WithModel`, `WithHTTPClient`, `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
+For a one-off call without holding a client, `pkg/tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{APIKey, BaseURL, Model, State, Questions})` builds one and calls `Evaluate`; same three required fields.
+
+Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey`, `WithBaseURL` and `WithModel` (all three required — `NewClient` errors without any of them; nothing in `pkg/` reads env vars), plus `WithHTTPClient`, `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
 
 Deliberately absent, matching the other protocol packages only where it earns its place: no `WithRateLimit`/`WithMaxConcurrency` wrap (`ratelimit.Wrap` decorates `common.LLM`, which this is not), no `GET /v1/models` call, no streaming. Add them when a caller needs them.
 

@@ -27,14 +27,6 @@ const (
 	// ProviderName identifies this protocol in errors and logs.
 	ProviderName = "typesafe"
 
-	// DefaultBaseURL is TypeSafe's hosted endpoint.
-	DefaultBaseURL = "https://api.typesafe.ai"
-
-	// DefaultModel is the alias for the current stable Jev release. Aliases
-	// move between releases; pin a versioned id (e.g. "jev-1.13.0") once
-	// confidence thresholds are tuned against one.
-	DefaultModel = "jev-latest"
-
 	evaluatePath = "/v1/systemone"
 )
 
@@ -90,13 +82,14 @@ func WithAPIKey(key string) ClientOption {
 	return func(o *clientOptions) { o.apiKey = key }
 }
 
-// WithBaseURL points the client at a different host, for tests or a proxy.
+// WithBaseURL sets the endpoint base, stopping before /v1 (the client appends
+// /v1/systemone). Required — there is no default host.
 func WithBaseURL(baseURL string) ClientOption {
 	return func(o *clientOptions) { o.baseURL = baseURL }
 }
 
-// WithModel sets the model every request names, overriding DefaultModel. A
-// request's own Model field still wins.
+// WithModel sets the model every request names. Required — there is no
+// default model. A request's own Model field still wins.
 func WithModel(model string) ClientOption {
 	return func(o *clientOptions) { o.model = model }
 }
@@ -128,12 +121,11 @@ type Client struct {
 
 var _ common.SystemOne = (*Client)(nil)
 
-// NewClient builds a client. WithAPIKey is required.
+// NewClient builds a client. WithAPIKey, WithBaseURL and WithModel are all
+// required: the caller always names where requests go and which model answers.
 func NewClient(opts ...ClientOption) (*Client, error) {
 	backoff := ratelimit.NewDefaultBackoff()
 	o := &clientOptions{
-		baseURL:      DefaultBaseURL,
-		model:        DefaultModel,
 		httpClient:   http.DefaultClient,
 		retryBackoff: &backoff,
 	}
@@ -142,6 +134,12 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	}
 	if o.apiKey == "" {
 		return nil, fmt.Errorf("systemone: API key is required (use WithAPIKey)")
+	}
+	if o.baseURL == "" {
+		return nil, fmt.Errorf("systemone: base URL is required (use WithBaseURL)")
+	}
+	if o.model == "" {
+		return nil, fmt.Errorf("systemone: model is required (use WithModel)")
 	}
 	return &Client{
 		apiKey:       o.apiKey,

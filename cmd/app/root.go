@@ -149,7 +149,7 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newInitCmd())
+	cmd.AddCommand(newInitCmd(), newSingleCmd())
 
 	fl := cmd.Flags()
 	fl.StringVar(&cfg.SettingsPath, "settings", "", "JSON per-command bash policy (default ./settings.json, then <user config dir>/tenzing/settings.json; env TENZING_SETTINGS)")

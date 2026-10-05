@@ -179,10 +179,31 @@ func (r *Registry) Resolve(ref string) (ResolvedModel, error) {
 	return rm, nil
 }
 
-// ResolveSystemOne maps an alias to a System One model and its provider.
-// Aliases only: inline "{...}" refs exist for --model, and no flag or config
-// key takes a System One ref yet.
+// ResolveSystemOne maps a ref to a System One model and its provider. Like
+// Resolve, a ref starting with "{" is an inline definition,
+// {"provider":"typesafe","model_name":"jev-latest"}, naming a declared
+// provider of type systemone (`tenzing single --model-type systemone` builds
+// one from --provider/--model). Otherwise the ref is an alias.
 func (r *Registry) ResolveSystemOne(ref string) (ResolvedSystemOne, error) {
+	if strings.HasPrefix(ref, "{") {
+		var e config.SystemOneEntry
+		if err := yaml.Unmarshal([]byte(ref), &e); err != nil {
+			return ResolvedSystemOne{}, fmt.Errorf("inline System One definition: %w", err)
+		}
+		if e.ModelName == "" {
+			return ResolvedSystemOne{}, fmt.Errorf("inline System One definition: model_name is required")
+		}
+		prov, ok := r.providers[e.Provider]
+		if !ok {
+			return ResolvedSystemOne{}, fmt.Errorf("inline System One definition: provider %q is not declared in providers: (declared: %s)",
+				e.Provider, strings.Join(r.providerNames(), ", "))
+		}
+		if prov.Type != config.SystemOneProviderType {
+			return ResolvedSystemOne{}, fmt.Errorf("inline System One definition: provider %q has type %q, not %s",
+				prov.Name, prov.Type, config.SystemOneProviderType)
+		}
+		return ResolvedSystemOne{Name: e.ModelName, Provider: prov}, nil
+	}
 	rs, ok := r.systemOne[ref]
 	if !ok {
 		if _, isLLM := r.byName[ref]; isLLM {

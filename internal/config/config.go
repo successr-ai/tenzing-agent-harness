@@ -421,11 +421,11 @@ func ValidateProviders(ps []Provider) error {
 		case !slices.Contains(ProviderTypes, p.Type):
 			return fmt.Errorf("providers[%d] (%s): unknown type %q (one of: %s; omit it for %s)",
 				i, p.Name, p.Type, strings.Join(ProviderTypes, ", "), DefaultProviderType)
-		// Only openai_compat needs a URL: for anthropic and ollama the
-		// client knows its vendor's endpoint. A systemone provider carries
-		// TypeSafe's endpoint by default but may point elsewhere.
-		case p.Type == DefaultProviderType && p.URL == "":
-			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, DefaultProviderType)
+		// openai_compat and systemone need a URL: for anthropic and ollama
+		// the client knows its vendor's endpoint. A systemone backend has no
+		// default — TypeSafe and OpenRouter both serve it.
+		case (p.Type == DefaultProviderType || p.Type == SystemOneProviderType) && p.URL == "":
+			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, p.Type)
 		// The client appends /v1/systemone itself, so the url stops before
 		// /v1. Copying an openai_compat base (".../api/v1") is the easy
 		// mistake, and it produces /v1/v1/systemone and a 404 at runtime.

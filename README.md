@@ -96,6 +96,26 @@ func main() {
 
 The same pattern serves the other roles: `WithSubagentLLM` and `WithBlackboardLLM` take any `common.LLM`; unset roles fall back to the main client. `WithAdvisorLLM` is different — it opts in to the advisor feature: a transcript-aware `advisor` tool (a stronger model that automatically sees the full conversation) plus a write-gate that requires consulting it before each turn's first state-changing tool call. Switch the main model between turns with `Harness.SetLLM(otherLLM)`.
 
+### One-off System One call (Jev)
+
+No harness needed. Every connection field is required — there is no default endpoint or model:
+
+```go
+resp, err := tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{
+	APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+	BaseURL: "https://openrouter.ai/api", // stops before /v1
+	Model:   "typesafe/jev-1.13",
+	State:   "rm -rf ./build",
+	Questions: map[string]tenzing.Question{
+		"destructive": tenzing.NewNoul("Does this command delete files?"),
+	},
+})
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(resp.Answers["destructive"].Noul) // 0..1
+```
+
 ## Features
 
 - **Tool system** — bash, Read, Write, Edit, Grep, Glob, ls; Edit and overwriting Write enforce read-before-edit via per-registry FileTracker stamps, with atomic per-path-locked writes
@@ -172,6 +192,14 @@ go run ./cmd/app --read-only                      # deny mutating tools, no appr
 
 # Attach images (vision-capable models): @path tokens in the prompt
 go run ./cmd/app -p "describe @screenshot.png"
+
+# One-off passthrough call: no agent loop, tools, system prompt or session
+go run ./cmd/app single "what is 6*7?"                                  # model: from tenzing.yaml
+go run ./cmd/app single --provider openrouter --model vendor/x "hi"     # any declared provider + wire model id
+echo "long prompt" | go run ./cmd/app single --model main-model         # stdin when no arg (or "-")
+go run ./cmd/app single --system-prompt "Be terse." --thinking=false --stream "hi"  # llm only; reasoning streams to stderr
+go run ./cmd/app single --model-type systemone \
+  '{"state":"rm -rf build","questions":{"destructive":{"type":"noul","instructions":"Does this delete files?"}}}'
 ```
 
 Endpoints and API keys come from the config file's `providers:` section — the CLI reads no provider env vars of its own. Keep the secret in the environment and reference it: `api_key: "$OPENROUTER_API_KEY"` expands at load time. **`tenzing.yaml` is required**: providers and models are declared, never compiled in, so a first run without one fails with a pointer to `tenzing init`. Optional env: `TENZING_CONFIG` (tenzing.yaml path, default `./tenzing.yaml` then `<user config dir>/tenzing/tenzing.yaml`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
@@ -227,7 +255,7 @@ mcp_servers:                           # mounted alongside any --mcp-server flag
 providers:                             # required: the backends models are served from
   - name: ollama-cloud                 # unique label, referenced by models[].provider
     type: ollama                       # anthropic|ollama|openai_compat|systemone; omit for openai_compat
-    url: https://ollama.com/           # required for openai_compat, optional for the other two
+    url: https://ollama.com/           # required for openai_compat and systemone, optional for anthropic/ollama
     api_key: "$OLLAMA_API_KEY"         # optional; empty = no auth. $VAR / ${VAR} expand from the environment
   - name: openrouter                   # no type: most hosted APIs speak the OpenAI protocol
     url: https://openrouter.ai/api/v1
@@ -340,7 +368,7 @@ systemone:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Unique label, referenced by `models[].provider`. Also how the backend identifies itself in logs and errors. |
-| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` stops before `/v1`, which the client appends). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
+| `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` is required and stops before `/v1`, which the client appends). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
 | `url` | URL | required for `openai_compat` | Endpoint. Required for `openai_compat`, which has nothing to default to. Optional for `anthropic` (defaults to `https://api.anthropic.com`) and `ollama` (defaults to **`https://ollama.com/`, the cloud endpoint** — set it explicitly to `http://localhost:11434` for a local daemon). |
 | `api_key` | string | unset | Omitted or empty means no auth (a local Ollama). Reference the environment rather than writing the secret: `api_key: "$OLLAMA_API_KEY"`. |
 | `extra` | map | unset | Fields injected into every request body, by dotted path (`provider.sort: throughput`). `openai_compat` only — silently ignored on the other types. Values are unvalidated: a bad key fails at the provider on the first request, not at startup. One key is reserved: `max_completion_tokens: true` renames the token-limit parameter instead of adding a field, which is what current OpenAI models require. |

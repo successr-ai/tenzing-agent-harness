@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestEvaluateRequestAndResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL))
+	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -82,8 +83,8 @@ func TestEvaluateRequestAndResponse(t *testing.T) {
 	if contentType != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", contentType)
 	}
-	if got.Model != DefaultModel {
-		t.Errorf("request model = %q, want %q", got.Model, DefaultModel)
+	if got.Model != "jev-latest" {
+		t.Errorf("request model = %q, want jev-latest", got.Model)
 	}
 	if q := got.Questions["frustration"]; q.Type != common.QuestionScore {
 		t.Errorf("frustration type = %q, want %q", q.Type, common.QuestionScore)
@@ -138,7 +139,7 @@ func TestEvaluateErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL),
+			client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"),
 				WithRetryBackoff(ratelimit.RetryBackoff{
 					MaxRetries:  tt.attempts,
 					BaseBackoff: time.Millisecond,
@@ -170,10 +171,20 @@ func TestEvaluateErrors(t *testing.T) {
 }
 
 func TestNewClientRequiresAPIKeyAndEvaluateRequiresQuestions(t *testing.T) {
-	if _, err := NewClient(); err == nil {
-		t.Error("NewClient without an API key: want error, got nil")
+	key, url, model := WithAPIKey("k"), WithBaseURL("http://x"), WithModel("jev-latest")
+	for _, tt := range []struct {
+		name, want string
+		opts       []ClientOption
+	}{
+		{name: "no key", want: "API key is required", opts: []ClientOption{url, model}},
+		{name: "no base URL", want: "base URL is required", opts: []ClientOption{key, model}},
+		{name: "no model", want: "model is required", opts: []ClientOption{key, url}},
+	} {
+		if _, err := NewClient(tt.opts...); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: err = %v, want containing %q", tt.name, err, tt.want)
+		}
 	}
-	client, err := NewClient(WithAPIKey("k"))
+	client, err := NewClient(key, url, model)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -189,7 +200,6 @@ func TestRequestModelOverridesClientModel(t *testing.T) {
 		reqModel    string
 		want        string
 	}{
-		{name: "default", want: DefaultModel},
 		{name: "client option", clientModel: "jev-preview", want: "jev-preview"},
 		{name: "request wins", clientModel: "jev-preview", reqModel: "jev-1.13.0", want: "jev-1.13.0"},
 	}
@@ -206,15 +216,11 @@ func TestRequestModelOverridesClientModel(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			opts := []ClientOption{WithAPIKey("k"), WithBaseURL(srv.URL)}
-			if tt.clientModel != "" {
-				opts = append(opts, WithModel(tt.clientModel))
-			}
-			client, err := NewClient(opts...)
+			client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel(tt.clientModel))
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
-			if tt.clientModel != "" && client.GetCurrentModel() != tt.clientModel {
+			if client.GetCurrentModel() != tt.clientModel {
 				t.Errorf("GetCurrentModel = %q, want %q", client.GetCurrentModel(), tt.clientModel)
 			}
 
@@ -262,7 +268,7 @@ func TestStructuredScoreLevelsRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL))
+	client, err := NewClient(WithAPIKey("k"), WithBaseURL(srv.URL), WithModel("jev-latest"))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

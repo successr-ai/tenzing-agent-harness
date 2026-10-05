@@ -100,7 +100,7 @@ func extraOptions(extra map[string]any) []openai_compat.ClientOption {
 
 // buildSystemOne constructs a System One client for a resolved decision
 // model. Endpoint and key come from the provider entry, as for every other
-// protocol; an empty URL keeps the client's own default (TypeSafe's).
+// protocol; config validation guarantees the URL is set.
 func buildSystemOne(rs ResolvedSystemOne) (common.SystemOne, error) {
 	if rs.Provider.Type != config.SystemOneProviderType {
 		return nil, fmt.Errorf("provider %s has type %q, not %s", rs.Provider.Name, rs.Provider.Type, config.SystemOneProviderType)
