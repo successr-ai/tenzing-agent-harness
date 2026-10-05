@@ -142,7 +142,7 @@ pkg/providers/
 ├── protocols/ratelimit/                TokenBucket, Semaphore, Wrap, RetryBackoff
 └── testutils/                          Shared test helpers
 
-pkg/tenzing/                             Public facade — alias/re-export, plus CallSystemOne (systemone.go)
+pkg/tenzing/                             Public facade — alias/re-export, plus CallSystemOne (systemone.go) and CallLLM (llm.go)
 ├── tenzing.go                          Harness, options, core/tooldef/eventbus type re-exports
 
 internal/
@@ -892,7 +892,7 @@ Three protocol implementations cover every provider the catalog ships:
 | `Anthropic` | `protocols/anthropic` (direct SDK) | Native tool use, token counting, optional rate limiting |
 | `OpenAI` | `protocols/openai_compat` | `WithMaxCompletionTokens()` |
 | `OpenRouter` | `protocols/openai_compat` | `WithBaseURL` |
-| any other OpenAI-compatible API | `protocols/openai_compat` | `WithBaseURL` + `WithAPIKey`; no catalog entries, define the model inline |
+| any other OpenAI-compatible API | `protocols/openai_compat` | `WithBaseURL` + `WithAPIKey`; no catalog entries, define the model inline. `WithEndpointURL(url)` instead sends chat completions to `url` exactly, with nothing appended |
 | `Ollama` | `protocols/ollama` (direct HTTP) | Local or Ollama Cloud |
 
 ### Message Types (provider-agnostic)
@@ -961,7 +961,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## 19. Public API — `pkg/tenzing`
 
-A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); The `pkg/common` type layer and `pkg/models` definitions are not re-exported — consumers import those packages directly. New public surface added anywhere below must be re-exported here in the same change. The one piece with logic is `systemone.go`: `CallSystemOne(ctx, SystemOneCall{APIKey, URL, Model, State, Questions})`, a one-off System One request with every connection field required (no default endpoint or model), plus the `pkg/common` question/answer aliases it takes and returns.
+A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); The `pkg/common` type layer and `pkg/models` definitions are not re-exported — consumers import those packages directly. New public surface added anywhere below must be re-exported here in the same change. The one piece with logic is `systemone.go`: `CallSystemOne(ctx, SystemOneCall{APIKey, URL, Model, State, Questions})`, a one-off System One request with every connection field required (no default endpoint or model), plus the `pkg/common` question/answer aliases it takes and returns; and `llm.go`: `CallLLM(ctx, LLMCall{APIKey, URL, Model, MaxTokens, Prompt})`, one chat completion against an OpenAI-compatible model, with the URL the full chat-completions endpoint used as given (`openai_compat.WithEndpointURL`) and every connection field required; `Prompt.OnText` set streams it. Its core, `PromptLLM(ctx, common.LLM, Prompt)`, works on any client and is what `tenzing single` runs.
 
 ## 20. Extending the System
 

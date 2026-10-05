@@ -116,6 +116,28 @@ if err != nil {
 fmt.Println(resp.Answers["destructive"].Noul) // 0..1
 ```
 
+### One-off LLM call
+
+The same for an OpenAI-compatible chat model — one prompt in, one answer out, no agent loop. The connection fields and `Prompt.Text` are required; set `OnText` to stream:
+
+```go
+resp, err := tenzing.CallLLM(ctx, tenzing.LLMCall{
+	APIKey:    os.Getenv("OPENROUTER_API_KEY"),
+	URL:       "https://openrouter.ai/api/v1/chat/completions", // full endpoint, used as given
+	Model:     "mistralai/mistral-nemo",
+	MaxTokens: 256,
+	Prompt: tenzing.Prompt{
+		Text:         "What is 6*7?",
+		SystemPrompt: "Be terse.",                      // optional
+		OnText:       func(s string) { fmt.Print(s) }, // optional: stream as it arrives
+	},
+})
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(resp.Text())
+```
+
 ## Features
 
 - **Tool system** — bash, Read, Write, Edit, Grep, Glob, ls; Edit and overwriting Write enforce read-before-edit via per-registry FileTracker stamps, with atomic per-path-locked writes

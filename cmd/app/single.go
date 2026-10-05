@@ -12,6 +12,7 @@ import (
 
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
+	"github.com/successr-ai/tenzing-agent-harness/pkg/tenzing"
 )
 
 const (
@@ -153,60 +154,34 @@ func singleLLM(ctx context.Context, d *deps, ref string, o singleOpts, prompt st
 	if err != nil {
 		return err
 	}
-	req := common.CompletionRequest{
-		Model:    llm.GetCurrentModel(),
-		Messages: []common.Message{common.NewUserMessage(prompt)},
-		System:   o.systemPrompt,
-		Think:    o.thinking,
-	}
+	p := tenzing.Prompt{Text: prompt, SystemPrompt: o.systemPrompt, Thinking: o.thinking}
 	if o.stream {
-		err = streamLLM(ctx, llm, req, out, o.stderr)
-	} else {
-		var resp common.CompletionResponse
-		if resp, err = llm.SendSyncMessage(ctx, req); err == nil {
-			_, err = fmt.Fprintln(out, resp.Text())
+		// Reasoning goes to stderr, keeping stdout the answer; a newline
+		// closes it off before the first answer text.
+		thinking := false
+		p.OnThinking = func(s string) {
+			if o.stderr != nil {
+				fmt.Fprint(o.stderr, s)
+				thinking = true
+			}
+		}
+		p.OnText = func(s string) {
+			if thinking {
+				fmt.Fprintln(o.stderr)
+				thinking = false
+			}
+			fmt.Fprint(out, s)
 		}
 	}
+	resp, err := tenzing.PromptLLM(ctx, llm, p)
 	if err != nil {
 		return fmt.Errorf("%s: %w", rm.Def.Name, err)
 	}
-	return nil
-}
-
-// streamLLM writes text deltas to out and reasoning deltas to errOut as they
-// arrive. The channel is drained to the end even after an error event: the
-// provider closes it on return, and leaving it unread would block it.
-func streamLLM(ctx context.Context, llm common.LLM, req common.CompletionRequest, out, errOut io.Writer) error {
-	events := make(chan common.StreamEvent)
-	done := make(chan error, 1)
-	go func() { done <- llm.SendStreamingMessage(ctx, req, events) }()
-
-	var streamErr error
-	thinking := false // reasoning printed but not yet ended with a newline
-	for ev := range events {
-		switch ev.Type {
-		case common.StreamEventDelta:
-			if thinking {
-				fmt.Fprintln(errOut)
-				thinking = false
-			}
-			fmt.Fprint(out, ev.Text)
-		case common.StreamEventThinking:
-			if errOut != nil {
-				fmt.Fprint(errOut, ev.Text)
-				thinking = true
-			}
-		case common.StreamEventError:
-			streamErr = ev.Err
-		}
+	if o.stream {
+		_, err = fmt.Fprintln(out)
+	} else {
+		_, err = fmt.Fprintln(out, resp.Text())
 	}
-	if err := <-done; err != nil {
-		return err
-	}
-	if streamErr != nil {
-		return streamErr
-	}
-	_, err := fmt.Fprintln(out)
 	return err
 }
 

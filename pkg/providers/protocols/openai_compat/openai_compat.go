@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -25,6 +27,7 @@ type clientOptions struct {
 	model                  Model
 	apiKey                 string
 	baseURL                string
+	endpointURL            string
 	retryBackoff           *ratelimit.RetryBackoff
 	useMaxCompletionTokens bool
 	reasoningEffort        string
@@ -70,6 +73,16 @@ func WithAPIKey(key string) ClientOption {
 func WithBaseURL(baseURL string) ClientOption {
 	return func(o *clientOptions) {
 		o.baseURL = baseURL
+	}
+}
+
+// WithEndpointURL sends chat completions to exactly this URL, e.g.
+// https://openrouter.ai/api/v1/chat/completions. The SDK otherwise appends
+// /chat/completions to the base URL; this skips that. Other requests
+// (ListModels) still use the base URL.
+func WithEndpointURL(endpoint string) ClientOption {
+	return func(o *clientOptions) {
+		o.endpointURL = endpoint
 	}
 }
 
@@ -171,6 +184,13 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	}
 	for _, f := range opts.extraFields {
 		reqOpts = append(reqOpts, option.WithJSONSet(f.path, f.value))
+	}
+	if opts.endpointURL != "" {
+		mw, err := endpointMiddleware(opts.endpointURL)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", opts.name, err)
+		}
+		reqOpts = append(reqOpts, option.WithMiddleware(mw))
 	}
 	sdk := openai.NewClient(reqOpts...)
 
@@ -451,4 +471,23 @@ func (c *Client) buildParams(req common.CompletionRequest) (openai.ChatCompletio
 	}
 
 	return params, nil
+}
+
+// endpointMiddleware redirects chat-completion requests to endpoint as given,
+// leaving every other request on the SDK's base URL.
+func endpointMiddleware(endpoint string) (option.Middleware, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("endpoint URL %q must be an absolute URL", endpoint)
+	}
+	return func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		if !strings.HasSuffix(req.URL.Path, "/chat/completions") {
+			return next(req)
+		}
+		out := req.Clone(req.Context())
+		target := *u
+		out.URL = &target
+		out.Host = ""
+		return next(out)
+	}, nil
 }
