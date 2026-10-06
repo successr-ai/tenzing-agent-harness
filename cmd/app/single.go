@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,10 +23,11 @@ const (
 
 // singleOpts are `tenzing single`'s flags.
 type singleOpts struct {
-	configPath string
-	provider   string
-	model      string
-	modelType  string
+	configPath  string
+	provider    string
+	model       string
+	modelType   string
+	httpTimeout time.Duration
 	// llm only.
 	systemPrompt string
 	thinking     *bool // nil keeps the provider default
@@ -68,7 +70,8 @@ func newSingleCmd() *cobra.Command {
 			if !found {
 				return fmt.Errorf("no config file found at %s: run 'tenzing init' to write a starter tenzing.yaml", cfgPath)
 			}
-			d, err := buildDeps(file.Providers, file.Models, nil)
+			d, err := buildDeps(file.Providers, file.Models, nil,
+				changedDuration(cmd, "http-timeout", o.httpTimeout))
 			if err != nil {
 				return fmt.Errorf("config %s: %w", cfgPath, err)
 			}
@@ -86,6 +89,7 @@ func newSingleCmd() *cobra.Command {
 	fl.StringVar(&o.modelType, "model-type", modelTypeLLM, "llm (chat completion) or systemone (typed evaluation)")
 	fl.StringVar(&o.systemPrompt, "system-prompt", "", "system prompt for the call (llm only; default none)")
 	fl.BoolVar(&thinking, "thinking", false, "model reasoning on or off (llm only; default: provider default)")
+	fl.DurationVar(&o.httpTimeout, "http-timeout", 0, httpTimeoutUsage)
 	fl.BoolVar(&o.stream, "stream", false, "print the answer as it streams, reasoning to stderr (llm only)")
 	return cmd
 }

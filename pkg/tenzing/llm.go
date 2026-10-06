@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
@@ -37,7 +38,10 @@ type LLMCall struct {
 	URL       string
 	Model     string
 	MaxTokens int
-	Prompt    Prompt
+	// HTTPTimeout bounds each HTTP attempt end to end; zero means none.
+	// A timed-out attempt is retried, so size it above the slowest answer.
+	HTTPTimeout time.Duration
+	Prompt      Prompt
 }
 
 // LLMResponse is the model's reply; Text() returns the answer.
@@ -55,7 +59,8 @@ func CallLLM(ctx context.Context, c LLMCall) (LLMResponse, error) {
 		common.ModelDefinition{Name: c.Model, MaxTokens: c.MaxTokens, Provider: "openai_compat"},
 		openai_compat.WithName("openai_compat"),
 		openai_compat.WithAPIKey(c.APIKey),
-		openai_compat.WithEndpointURL(c.URL))
+		openai_compat.WithEndpointURL(c.URL),
+		openai_compat.WithHTTPTimeout(c.HTTPTimeout))
 	if err != nil {
 		return LLMResponse{}, fmt.Errorf("CallLLM: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
@@ -49,6 +50,8 @@ type ClientOption func(*clientOptions)
 type clientOptions struct {
 	model  Model
 	apiKey string
+	// httpTimeout bounds each HTTP attempt; zero means none.
+	httpTimeout time.Duration
 	// retryBackoff configures client-side 429 retries; defaults to
 	// ratelimit.NewDefaultBackoff.
 	retryBackoff *ratelimit.RetryBackoff
@@ -137,6 +140,17 @@ func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
 // WithBaseURL sets the base URL for the Ollama client. This is useful for
 // testing or pointing at a self-hosted Ollama server (e.g.
 // "http://localhost:11434").
+// WithHTTPTimeout bounds each HTTP attempt end to end — connect,
+// response headers, and the full body (a streamed body included) — via
+// http.Client.Timeout. Zero (the default) means no timeout: a server
+// that accepts the request and never answers blocks the call forever.
+// Size it above the slowest legitimate response.
+func WithHTTPTimeout(d time.Duration) ClientOption {
+	return func(o *clientOptions) {
+		o.httpTimeout = d
+	}
+}
+
 func WithBaseURL(baseURL string) ClientOption {
 	return func(o *clientOptions) {
 		if baseURL != "" {
@@ -153,10 +167,14 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 		return nil, fmt.Errorf("ollama: Model is required")
 	}
 
+	httpClient := http.DefaultClient
+	if opts.httpTimeout > 0 {
+		httpClient = &http.Client{Timeout: opts.httpTimeout}
+	}
 	raw := &Client{
 		baseURL:      strings.TrimSuffix(opts.baseURL, "/"),
 		apiKey:       opts.apiKey,
-		client:       http.DefaultClient,
+		client:       httpClient,
 		model:        opts.model,
 		contextSize:  opts.contextSize,
 		retryBackoff: opts.retryBackoff,

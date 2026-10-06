@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
@@ -61,6 +63,8 @@ type clientOptions struct {
 	rateLimit *ratelimit.TokenBucketConfig
 	// baseURL overrides anthropicBaseURL when non-empty.
 	baseURL string
+	// httpTimeout bounds each HTTP attempt; zero means none.
+	httpTimeout time.Duration
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
@@ -78,6 +82,18 @@ func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
 		opt(o)
 	}
 	return o
+}
+
+// WithHTTPTimeout bounds each HTTP attempt end to end — connect,
+// response headers, and the full body (a streamed body included) — via
+// http.Client.Timeout. Zero (the default) means no timeout: a provider
+// that accepts the request and never answers blocks the call forever.
+// A timed-out attempt counts as a connection error, so the SDK's own
+// retries apply. Size it above the slowest legitimate response.
+func WithHTTPTimeout(d time.Duration) ClientOption {
+	return func(o *clientOptions) {
+		o.httpTimeout = d
+	}
 }
 
 // WithBaseURL overrides the Anthropic API endpoint. Empty keeps the
@@ -138,6 +154,9 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	reqOpts := []option.RequestOption{option.WithBaseURL(url)}
 	if opts.apiKey != "" {
 		reqOpts = append(reqOpts, option.WithAPIKey(opts.apiKey))
+	}
+	if opts.httpTimeout > 0 {
+		reqOpts = append(reqOpts, option.WithHTTPClient(&http.Client{Timeout: opts.httpTimeout}))
 	}
 	client := anthropicSDK.NewClient(reqOpts...)
 

@@ -26,7 +26,7 @@ Protocol clients (`pkg/providers/protocols/`), each `NewClient(model, opts...) (
 
 Models are values implementing `common.Model`, not strings. `pkg/models` ships a catalog of standard definitions for convenience (`models.Anthropic_ClaudeSonnet4_6`, `models.OpenRouter_KimiK3`, ...), but any `common.Model` implementation — including an inline `common.ModelDefinition` — works the same. API keys and base URLs are yours to supply via client options; the library reads no env vars.
 
-Every protocol retries server 429s with exponential backoff by default (`ratelimit.NewDefaultBackoff()` values); `WithRetryBackoff(ratelimit.RetryBackoff)` overrides the values. Every protocol also takes the same two limiting options, off by default: `WithRateLimit(rate, burstSize)` for a client-side token bucket (both values required) and `WithMaxConcurrency(n)` to bound in-flight requests. The wrapping happens inside `NewClient` — the returned `common.LLM` is already guarded.
+Every protocol retries server 429s with exponential backoff by default (`ratelimit.NewDefaultBackoff()` values); `WithRetryBackoff(ratelimit.RetryBackoff)` overrides the values. Every protocol also takes the same two limiting options, off by default: `WithRateLimit(rate, burstSize)` for a client-side token bucket (both values required) and `WithMaxConcurrency(n)` to bound in-flight requests. The wrapping happens inside `NewClient` — the returned `common.LLM` is already guarded. Every protocol also takes `WithHTTPTimeout(d)`, off by default: an end-to-end bound on each HTTP attempt (connect, headers and the full body, a streamed body included, via `http.Client.Timeout`). Without it a provider that accepts a request and never answers blocks the call forever. A timed-out attempt is a connection error, so the openai-go and anthropic SDKs retry it (2 retries by default) and the agent's transient-error retry may retry it again; size `d` above the slowest legitimate response.
 
 ## Library Usage — OpenRouter example
 
@@ -210,6 +210,7 @@ go run ./cmd/app -p "..." --thinking=false        # toggle model reasoning
 go run ./cmd/app -p "..." --no-context-files      # skip AGENTS.md loading
 go run ./cmd/app -p "..." --trust                 # load ./SYSTEM.md etc. this run
 go run ./cmd/app -p "..." --timeout 5m            # abort the turn after 5m
+go run ./cmd/app -p "..." --http-timeout 90s      # bound each HTTP attempt to the provider
 go run ./cmd/app --read-only                      # deny mutating tools, no approval prompts
 
 # Attach images (vision-capable models): @path tokens in the prompt
@@ -279,6 +280,7 @@ providers:                             # required: the backends models are serve
     type: ollama                       # anthropic|ollama|openai_compat|systemone; omit for openai_compat
     url: https://ollama.com/           # required for openai_compat and systemone, optional for anthropic/ollama
     api_key: "$OLLAMA_API_KEY"         # optional; empty = no auth. $VAR / ${VAR} expand from the environment
+    http_timeout: "90s"                # optional; bounds each HTTP attempt (--http-timeout overrides)
   - name: openrouter                   # no type: most hosted APIs speak the OpenAI protocol
     url: https://openrouter.ai/api/v1
     api_key: "$OPENROUTER_API_KEY"
@@ -393,6 +395,7 @@ systemone:
 | `type` | string | `openai_compat` | Wire protocol: `anthropic`, `ollama`, `openai_compat`, or `systemone` (System One decision models — TypeSafe's own endpoint or OpenRouter's mirror of it; its `url` is required and is the full endpoint, used exactly as given). Most hosted APIs speak the OpenAI protocol, so this is usually omitted — what distinguishes one such backend from another is its `url`, not a vendor name. An unrecognized value is a startup error; only an absent one defaults. |
 | `url` | URL | required for `openai_compat` | Endpoint. Required for `openai_compat`, which has nothing to default to. Optional for `anthropic` (defaults to `https://api.anthropic.com`) and `ollama` (defaults to **`https://ollama.com/`, the cloud endpoint** — set it explicitly to `http://localhost:11434` for a local daemon). |
 | `api_key` | string | unset | Omitted or empty means no auth (a local Ollama). Reference the environment rather than writing the secret: `api_key: "$OLLAMA_API_KEY"`. |
+| `http_timeout` | duration | unset (none) | End-to-end bound on each HTTP attempt to this backend (connect, headers, full body, streamed bodies included) — the protocol client's `WithHTTPTimeout`. All types, `systemone` included. A timed-out attempt is retried like any connection error, so size it above the slowest legitimate response. `--http-timeout` (on the root command and `tenzing single`) replaces it on every provider; `--http-timeout 0` turns them all off. |
 | `extra` | map | unset | Fields injected into every request body, by dotted path (`provider.sort: throughput`). `openai_compat` only — silently ignored on the other types. Values are unvalidated: a bad key fails at the provider on the first request, not at startup. One key is reserved: `max_completion_tokens: true` renames the token-limit parameter instead of adding a field, which is what current OpenAI models require. |
 
 `models.llm[]` fields (also the schema for inline JSON model refs). `models.systemone[]` takes `name`, `provider` and `model_name` only. Note `name` and `model_name` are different things: `name` is the alias you refer to the model by, `model_name` is the id the provider knows it as.
@@ -409,7 +412,7 @@ systemone:
 | `reasoning_effort` | string | unset | Provider reasoning tier, sent verbatim: `reasoning_effort` on OpenAI-compatible providers, Ollama's `think` level (`low`/`medium`/`high`/`max`). The provider validates it — a bad value fails the first request, not startup. Anthropic takes a numeric budget instead and logs a warning. Roles pick it up by referencing the entry (`advisor_model: careful-model`). |
 | `cost` | map | unset | USD per MTok: `input`, `output`, optional `cache_read` (default 0.1x input), `cache_write` (default 1.25x input). Feeds `GET /stats` cost tracking. Ignored in inline refs. |
 
-Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`. The `connect:` section is the file-based equivalent of the `--connect*` flags (see [Connect mode](#connect-mode-control-plane-dial-out)); its precedence is the same flag > env > file chain as everything else.
+Not configurable via the file (per-run controls, flag-only): `-p/--prompt`, `--output-format`, `--list-models`, `--resume`, `-c/--continue`, `--conversation-id`, `--trust`, `--timeout`, `--http-timeout` (overrides every provider's `http_timeout`). The `connect:` section is the file-based equivalent of the `--connect*` flags (see [Connect mode](#connect-mode-control-plane-dial-out)); its precedence is the same flag > env > file chain as everything else.
 
 ## Connect mode (control-plane dial-out)
 

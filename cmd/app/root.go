@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tab58/huma-http-server/config"
@@ -60,7 +61,8 @@ func newRootCmd() *cobra.Command {
 
 			// --provider entries are merged over the file's by name, so a
 			// flag can repoint one provider without restating the rest.
-			d, err := buildDeps(file.Providers, file.Models, cfg.Providers)
+			d, err := buildDeps(file.Providers, file.Models, cfg.Providers,
+				changedDuration(cmd, "http-timeout", cfg.HTTPTimeout))
 			if err != nil {
 				return fmt.Errorf("config %s: %w", cfgPath, err)
 			}
@@ -190,6 +192,7 @@ func newRootCmd() *cobra.Command {
 
 	fl.StringArrayVar(&cfg.MCPServers, "mcp-server", nil, `mount an MCP server, repeatable: "name=command arg1 arg2"`)
 	fl.StringVar(&cfg.ConversationID, "conversation-id", "", "resume a prior conversation's memory")
+	fl.DurationVar(&cfg.HTTPTimeout, "http-timeout", 0, httpTimeoutUsage)
 	fl.StringArrayVar(&cfg.Providers, "provider", nil, `declare or override a provider as JSON, repeatable: '{"name":"ollama-cloud","type":"ollama","url":"https://ollama.com/","api_key":"$OLLAMA_API_KEY"}'; merged over tenzing.yaml by name`)
 
 	fl.IntVar(&cfg.Port, "port", 8080, "serve-mode listen port (env SERVER_PORT)")
@@ -202,6 +205,17 @@ func newRootCmd() *cobra.Command {
 	fl.BoolVar(&cfg.ConnectEphemeralGrants, "connect-ephemeral-grants", true, "connect mode: keep runtime-approved bash globs in memory only; false persists them to settings.json (env TENZING_CONNECT_EPHEMERAL_GRANTS; tenzing.yaml connect.ephemeral_grants)")
 
 	return cmd
+}
+
+const httpTimeoutUsage = "bound each HTTP attempt to a model provider, e.g. 90s; overrides every provider's http_timeout (0 = none)"
+
+// changedDuration returns &v when the named flag was passed and nil
+// otherwise, so a deliberate 0 is told apart from the flag's default.
+func changedDuration(cmd *cobra.Command, name string, v time.Duration) *time.Duration {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	return &v
 }
 
 // markSetFlags records whether flags with "unset vs. zero" semantics were

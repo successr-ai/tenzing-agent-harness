@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
@@ -71,6 +72,7 @@ type clientOptions struct {
 	url          string
 	model        string
 	httpClient   *http.Client
+	httpTimeout  time.Duration
 	retryBackoff *ratelimit.RetryBackoff
 }
 
@@ -96,6 +98,15 @@ func WithModel(model string) ClientOption {
 // WithHTTPClient supplies the HTTP client, for custom transports or timeouts.
 func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(o *clientOptions) { o.httpClient = hc }
+}
+
+// WithHTTPTimeout bounds each HTTP attempt end to end — connect, response
+// headers and the full body — via http.Client.Timeout, applied to a copy of
+// whichever client WithHTTPClient supplied (or the default one). Zero (the
+// default) means no timeout. A timed-out attempt is a transient failure, so
+// Evaluate retries it; size d above the slowest legitimate response.
+func WithHTTPTimeout(d time.Duration) ClientOption {
+	return func(o *clientOptions) { o.httpTimeout = d }
 }
 
 // WithRetryBackoff overrides the 429 retry backoff, which is enabled by
@@ -139,6 +150,11 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	}
 	if o.model == "" {
 		return nil, fmt.Errorf("systemone: model is required (use WithModel)")
+	}
+	if o.httpTimeout > 0 {
+		hc := *o.httpClient
+		hc.Timeout = o.httpTimeout
+		o.httpClient = &hc
 	}
 	return &Client{
 		apiKey:       o.apiKey,

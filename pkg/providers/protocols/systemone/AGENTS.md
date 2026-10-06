@@ -12,6 +12,7 @@ The interface and every type it names (`State`, `Question`, `Answer`, `Evaluatio
 | --- | --- |
 | `systemone.go` | `Client`, its options, `Evaluate`, and the private wire envelope |
 | `systemone_test.go` | wire-shape round trip against `httptest`, error/retry table, model precedence, constructor validation |
+| `systemone_timeout_test.go` | `WithHTTPTimeout` unblocks a stalled endpoint, in either order with `WithHTTPClient` |
 | `pkg/common/systemone.go` | the `SystemOne` interface, the shared types, the `NewNoul`/`NewChoice`/`NewScore` constructors |
 
 ## Protocol
@@ -101,9 +102,9 @@ judge, err := systemone.NewClient(
     systemone.WithModel("typesafe/jev-1.13"))
 ```
 
-For a one-off call without holding a client, `pkg/tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{APIKey, URL, Model, State, Questions})` builds one and calls `Evaluate`; same three required fields.
+For a one-off call without holding a client, `pkg/tenzing.CallSystemOne(ctx, tenzing.SystemOneCall{APIKey, URL, Model, State, Questions, HTTPTimeout})` builds one and calls `Evaluate`; same three required fields.
 
-Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey`, `WithURL` and `WithModel` (all three required — `NewClient` errors without any of them; nothing in `pkg/` reads env vars), plus `WithHTTPClient`, `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
+Take a `common.SystemOne` in your own code, not a `*Client` — same rule as `common.LLM`. Options: `WithAPIKey`, `WithURL` and `WithModel` (all three required — `NewClient` errors without any of them; nothing in `pkg/` reads env vars), plus `WithHTTPClient`, `WithHTTPTimeout` (end-to-end bound on each attempt, applied to a copy of whichever client `WithHTTPClient` supplied; a timed-out attempt is transient, so it is retried), `WithRetryBackoff`. `EvaluationRequest.Model` overrides the client's model for one request; empty means the client's own. `Client` is safe for concurrent use.
 
 Deliberately absent, matching the other protocol packages only where it earns its place: no `WithRateLimit`/`WithMaxConcurrency` wrap (`ratelimit.Wrap` decorates `common.LLM`, which this is not), no `GET /v1/models` call, no streaming. Add them when a caller needs them.
 

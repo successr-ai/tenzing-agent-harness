@@ -86,6 +86,9 @@ type cliConfig struct {
 	// Providers are raw --provider JSON definitions, merged over
 	// tenzing.yaml's providers: list by name at startup.
 	Providers []string
+	// HTTPTimeout is --http-timeout: when the flag is passed it replaces
+	// every provider's http_timeout.
+	HTTPTimeout time.Duration
 
 	// serve
 	Port        int

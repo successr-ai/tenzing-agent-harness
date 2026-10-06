@@ -107,7 +107,7 @@ func printDeps(t *testing.T) *deps {
 	d, err := buildDeps(
 		[]cfgfile.Provider{{Name: "local", Type: "ollama", URL: "http://localhost:11434"}},
 		cfgfile.ModelsSection{LLM: []cfgfile.ModelEntry{{Name: "test-model", Provider: "local", ModelName: "glm-5.3"}}},
-		nil)
+		nil, nil)
 	if err != nil {
 		t.Fatalf("buildDeps: %v", err)
 	}

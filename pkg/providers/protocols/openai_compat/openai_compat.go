@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	"github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
@@ -28,6 +29,7 @@ type clientOptions struct {
 	apiKey                 string
 	baseURL                string
 	endpointURL            string
+	httpTimeout            time.Duration
 	retryBackoff           *ratelimit.RetryBackoff
 	useMaxCompletionTokens bool
 	reasoningEffort        string
@@ -83,6 +85,18 @@ func WithBaseURL(baseURL string) ClientOption {
 func WithEndpointURL(endpoint string) ClientOption {
 	return func(o *clientOptions) {
 		o.endpointURL = endpoint
+	}
+}
+
+// WithHTTPTimeout bounds each HTTP attempt end to end — connect,
+// response headers, and the full body (a streamed body included) — via
+// http.Client.Timeout. Zero (the default) means no timeout: a provider
+// that accepts the request and never answers blocks the call forever.
+// A timed-out attempt counts as a connection error, so the SDK's own
+// retries apply. Size it above the slowest legitimate response.
+func WithHTTPTimeout(d time.Duration) ClientOption {
+	return func(o *clientOptions) {
+		o.httpTimeout = d
 	}
 }
 
@@ -184,6 +198,9 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	}
 	for _, f := range opts.extraFields {
 		reqOpts = append(reqOpts, option.WithJSONSet(f.path, f.value))
+	}
+	if opts.httpTimeout > 0 {
+		reqOpts = append(reqOpts, option.WithHTTPClient(&http.Client{Timeout: opts.httpTimeout}))
 	}
 	if opts.endpointURL != "" {
 		mw, err := endpointMiddleware(opts.endpointURL)

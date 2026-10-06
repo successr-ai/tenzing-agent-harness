@@ -51,6 +51,7 @@ providers:
   - name: router
     url: https://openrouter.ai/api/v1
     api_key: sk-test
+    http_timeout: "45s"
     extra:
       provider.sort: throughput
 models:
@@ -117,6 +118,9 @@ models:
 	// type omitted in the fixture: it must come back defaulted.
 	if p.Name != "router" || p.Type != DefaultProviderType || p.URL != "https://openrouter.ai/api/v1" || p.APIKey != "sk-test" {
 		t.Errorf("provider wrong: %+v", p)
+	}
+	if p.HTTPTimeout.Value() != 45*time.Second {
+		t.Errorf("http_timeout = %v, want 45s", p.HTTPTimeout.Value())
 	}
 	if got := p.Extra["provider.sort"]; got != "throughput" {
 		t.Errorf("extra = %+v, want provider.sort: throughput", p.Extra)
@@ -189,6 +193,7 @@ func TestLoad_Errors(t *testing.T) {
 		{"provider missing url when compat", "providers:\n  - name: p\n    url: \"\"\n", "url is required for openai_compat"},
 
 		{"vendor name is not a type", "providers:\n  - name: p\n    type: openrouter\n    url: http://x\n", "unknown type"},
+		{"negative provider http_timeout", "providers:\n  - name: p\n    url: http://x\n    http_timeout: \"-1s\"\n", "http_timeout must be >= 0"},
 		{"duplicate provider", provYAML + "  - name: p\n    type: ollama\n    url: http://y\n", "duplicate provider"},
 
 		// Models.

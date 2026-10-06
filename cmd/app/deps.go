@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/app/modelregistry"
 	cfgfile "github.com/successr-ai/tenzing-agent-harness/internal/config"
@@ -38,9 +39,15 @@ type systemOneSource interface {
 }
 
 // buildDeps merges --provider JSON definitions over the config file's
-// providers, then builds the registry and client factory from the result.
-func buildDeps(providers []cfgfile.Provider, models cfgfile.ModelsSection, providerFlags []string) (*deps, error) {
+// providers, applies --http-timeout (nil when the flag was not passed) to
+// every one of them, then builds the registry and client factory from the
+// result.
+func buildDeps(providers []cfgfile.Provider, models cfgfile.ModelsSection, providerFlags []string, httpTimeout *time.Duration) (*deps, error) {
 	merged, err := modelregistry.MergeProviderFlags(providers, providerFlags)
+	if err != nil {
+		return nil, err
+	}
+	merged, err = overrideHTTPTimeout(merged, httpTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -50,6 +57,24 @@ func buildDeps(providers []cfgfile.Provider, models cfgfile.ModelsSection, provi
 	}
 	factory := modelregistry.NewFactory()
 	return &deps{models: reg, llms: factory, judges: factory}, nil
+}
+
+// overrideHTTPTimeout replaces every provider's http_timeout with the
+// --http-timeout value, returning a new slice; nil leaves them as declared.
+func overrideHTTPTimeout(ps []cfgfile.Provider, d *time.Duration) ([]cfgfile.Provider, error) {
+	if d == nil {
+		return ps, nil
+	}
+	if *d < 0 {
+		return nil, fmt.Errorf("--http-timeout must be >= 0, got %v", *d)
+	}
+	v := cfgfile.Duration(*d)
+	out := make([]cfgfile.Provider, len(ps))
+	for i, p := range ps {
+		p.HTTPTimeout = &v
+		out[i] = p
+	}
+	return out, nil
 }
 
 // resolve maps a model ref (alias or inline JSON) to a definition, listing

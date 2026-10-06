@@ -269,12 +269,17 @@ const DefaultProviderType = "openai_compat"
 // ignored on the other types. One key is reserved: max_completion_tokens
 // renames the token-limit parameter rather than adding a field, which is
 // what current OpenAI models require.
+//
+// HTTPTimeout bounds each HTTP attempt to this backend end to end (the
+// protocol client's WithHTTPTimeout); omitted or zero means none.
+// --http-timeout overrides it on every provider.
 type Provider struct {
-	Name   string         `yaml:"name"`
-	Type   string         `yaml:"type"`
-	URL    string         `yaml:"url"`
-	APIKey string         `yaml:"api_key"`
-	Extra  map[string]any `yaml:"extra"`
+	Name        string         `yaml:"name"`
+	Type        string         `yaml:"type"`
+	URL         string         `yaml:"url"`
+	APIKey      string         `yaml:"api_key"`
+	HTTPTimeout *Duration      `yaml:"http_timeout"`
+	Extra       map[string]any `yaml:"extra"`
 }
 
 // ModelEntry defines a model. Name is the unique local alias that model
@@ -426,6 +431,8 @@ func ValidateProviders(ps []Provider) error {
 		// default — TypeSafe and OpenRouter both serve it.
 		case (p.Type == DefaultProviderType || p.Type == SystemOneProviderType) && p.URL == "":
 			return fmt.Errorf("providers[%d] (%s): url is required for %s providers", i, p.Name, p.Type)
+		case p.HTTPTimeout.Value() < 0:
+			return fmt.Errorf("providers[%d] (%s): http_timeout must be >= 0, got %v", i, p.Name, p.HTTPTimeout.Value())
 		case seen[p.Name]:
 			return fmt.Errorf("providers[%d]: duplicate provider name %q", i, p.Name)
 		}

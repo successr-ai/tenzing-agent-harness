@@ -38,11 +38,13 @@ func buildLLM(rm ResolvedModel) (common.LLM, error) {
 		}
 		return protoanthropic.NewClient(def,
 			protoanthropic.WithAPIKey(key),
-			protoanthropic.WithBaseURL(url))
+			protoanthropic.WithBaseURL(url),
+			protoanthropic.WithHTTPTimeout(prov.HTTPTimeout.Value()))
 	case "ollama":
 		opts := []protoollama.ClientOption{
 			protoollama.WithAPIKey(key),
 			protoollama.WithBaseURL(url),
+			protoollama.WithHTTPTimeout(prov.HTTPTimeout.Value()),
 		}
 		if def.ReasoningEffort != "" {
 			opts = append(opts, protoollama.WithReasoningEffort(def.ReasoningEffort))
@@ -70,6 +72,7 @@ func compatOptions(def common.ModelDefinition, prov config.Provider) []openai_co
 		openai_compat.WithName(prov.Name),
 		openai_compat.WithAPIKey(prov.APIKey),
 		openai_compat.WithBaseURL(prov.URL),
+		openai_compat.WithHTTPTimeout(prov.HTTPTimeout.Value()),
 	}
 	if def.ReasoningEffort != "" {
 		opts = append(opts, openai_compat.WithReasoningEffort(def.ReasoningEffort))
@@ -108,7 +111,8 @@ func buildSystemOne(rs ResolvedSystemOne) (common.SystemOne, error) {
 	return systemone.NewClient(
 		systemone.WithAPIKey(rs.Provider.APIKey),
 		systemone.WithURL(rs.Provider.URL),
-		systemone.WithModel(rs.Name))
+		systemone.WithModel(rs.Name),
+		systemone.WithHTTPTimeout(rs.Provider.HTTPTimeout.Value()))
 }
 
 // Factory builds clients on demand and reuses one per distinct

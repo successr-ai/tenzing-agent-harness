@@ -3,6 +3,7 @@ package tenzing
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/pkg/common"
 	s1client "github.com/successr-ai/tenzing-agent-harness/pkg/providers/protocols/systemone"
@@ -21,6 +22,9 @@ type SystemOneCall struct {
 	State common.State
 	// Questions are keyed by caller-chosen ids, which key the answers too.
 	Questions map[string]Question
+	// HTTPTimeout bounds each HTTP attempt end to end; zero means none.
+	// A timed-out attempt is retried, so size it above the slowest answer.
+	HTTPTimeout time.Duration
 }
 
 // System One request and answer types, and the question constructors.
@@ -45,7 +49,8 @@ func CallSystemOne(ctx context.Context, c SystemOneCall) (SystemOneResponse, err
 	client, err := s1client.NewClient(
 		s1client.WithAPIKey(c.APIKey),
 		s1client.WithURL(c.URL),
-		s1client.WithModel(c.Model))
+		s1client.WithModel(c.Model),
+		s1client.WithHTTPTimeout(c.HTTPTimeout))
 	if err != nil {
 		return SystemOneResponse{}, fmt.Errorf("CallSystemOne: %w", err)
 	}
