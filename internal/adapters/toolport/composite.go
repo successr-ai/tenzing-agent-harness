@@ -20,8 +20,9 @@ import (
 // is stable: native (sorted by name), then extensions in registration order,
 // then dynamic sources in registration order.
 type Composite struct {
-	static  []core.ToolSpec
-	sources []core.DynamicToolSource
+	static   []core.ToolSpec
+	sources  []core.DynamicToolSource
+	disabled map[string]bool // lowercased names never mounted, from any source
 
 	mu      sync.RWMutex
 	dynamic []core.ToolSpec          // snapshot from the last BeginTurn
@@ -30,8 +31,15 @@ type Composite struct {
 
 // NewComposite builds a Composite from the native registry and the registered
 // extensions. A static extension tool whose name collides with a native tool
-// (or another extension's) is a construction error.
-func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
+// (or another extension's) is a construction error. Tools named in disabled
+// (case-insensitive) are dropped from every source — native, extension and
+// dynamic — so a disabled extension tool (e.g. "repl", "load_skill") never
+// reaches the model.
+func NewComposite(native *Registry, exts *core.Extensions, disabled ...string) (*Composite, error) {
+	off := make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		off[strings.ToLower(name)] = true
+	}
 	var static []core.ToolSpec
 
 	// native tools: wrap into ToolSpecs closing over the registry. The
@@ -39,6 +47,9 @@ func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
 	nativeDefs := native.ProviderDefinitions()
 	sort.Slice(nativeDefs, func(i, j int) bool { return nativeDefs[i].Name < nativeDefs[j].Name })
 	for _, def := range nativeDefs {
+		if off[strings.ToLower(def.Name)] {
+			continue
+		}
 		static = append(static, core.ToolSpec{
 			Definition: def,
 			Origin:     "native",
@@ -49,7 +60,11 @@ func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
 
 	// extension tools, in registration order
 	for _, p := range exts.ToolProviders() {
-		static = append(static, p.Tools()...)
+		for _, s := range p.Tools() {
+			if !off[strings.ToLower(s.Definition.Name)] {
+				static = append(static, s)
+			}
+		}
 	}
 
 	byName := make(map[string]core.ToolSpec, len(static))
@@ -62,9 +77,10 @@ func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
 	}
 
 	return &Composite{
-		static:  static,
-		sources: exts.DynamicToolSources(),
-		byName:  byName,
+		static:   static,
+		sources:  exts.DynamicToolSources(),
+		disabled: off,
+		byName:   byName,
 	}, nil
 }
 
@@ -92,6 +108,9 @@ func (c *Composite) BeginTurn(ctx context.Context) {
 	for _, src := range c.sources {
 		for _, s := range src.CurrentTools(ctx) {
 			key := strings.ToLower(s.Definition.Name)
+			if c.disabled[key] {
+				continue
+			}
 			if _, ok := byName[key]; ok {
 				slog.Warn("dynamic tool name collision; skipping", "tool", s.Definition.Name, "origin", s.Origin)
 				continue

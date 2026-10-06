@@ -103,7 +103,8 @@ type harnessOptions struct {
 	pluginDirs []string
 
 	// disabledTools removes tools by name (case-insensitive) after all
-	// registration, including built-ins like "bash" and "edit".
+	// registration, including built-ins like "bash" and "edit" and
+	// extension/dynamic tools (filtered in toolport.NewComposite).
 	disabledTools []string
 
 	// extensions are additional core.Extension registrations, appended after

@@ -181,3 +181,36 @@ func hasDef(defs []common.ToolDefinition, name string) bool {
 	}
 	return false
 }
+
+// Disabled names are dropped from every source, not just the native
+// registry: extension and dynamic tools are where repl, load_skill and
+// friends live.
+func TestCompositeDisabledCoversExtensionAndDynamicTools(t *testing.T) {
+	static := &fakeStaticExt{name: "static", specs: []core.ToolSpec{spec("repl", "ext", "x"), spec("keep_static", "ext", "x")}}
+	dyn := &fakeDynamicExt{name: "dyn"}
+	dyn.set([]core.ToolSpec{spec("Load_Skill", "dyn", "x"), spec("keep_dynamic", "dyn", "x")})
+
+	c, err := NewComposite(newTestRegistry(t), core.NewExtensions(static, dyn), "REPL", "load_skill")
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
+	c.BeginTurn(context.Background())
+
+	names := map[string]bool{}
+	for _, d := range c.Definitions() {
+		names[d.Name] = true
+	}
+	for _, gone := range []string{"repl", "Load_Skill"} {
+		if names[gone] {
+			t.Errorf("disabled tool %q still mounted", gone)
+		}
+	}
+	for _, kept := range []string{"keep_static", "keep_dynamic"} {
+		if !names[kept] {
+			t.Errorf("tool %q dropped, want mounted", kept)
+		}
+	}
+	if res := c.Execute(context.Background(), core.ToolCall{ID: "1", Name: "repl"}); !res.IsError {
+		t.Error("disabled tool still executes")
+	}
+}

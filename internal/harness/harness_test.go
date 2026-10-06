@@ -436,6 +436,36 @@ func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
 	}
 }
 
+// Extension tools (repl from the blackboard, the skill tools) honour
+// WithDisabledTool too, and disabling load_skill drops the skills index from
+// the system prompt instead of advertising a tool the model can't call.
+func TestHarnessDisabledToolsRemovesExtensionToolsAndSkillsIndex(t *testing.T) {
+	skillsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skillsDir, "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: demo\ndescription: demo skill\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillsDir, "demo", "SKILL.md"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(newTestHarness(t, WithSkillsDir(skillsDir)).SystemPrompt(), "Available skills") {
+		t.Fatal("control: skills index missing with skill tools enabled")
+	}
+
+	h := newTestHarness(t, WithSkillsDir(skillsDir),
+		WithDisabledTool("repl"), WithDisabledTool("list_skills"), WithDisabledTool("load_skill"))
+	for _, def := range h.ToolDefinitions() {
+		switch strings.ToLower(def.Name) {
+		case "repl", "list_skills", "load_skill":
+			t.Errorf("tool %q present despite WithDisabledTool", def.Name)
+		}
+	}
+	if strings.Contains(h.SystemPrompt(), "Available skills") {
+		t.Error("skills index still in the system prompt with load_skill disabled")
+	}
+}
+
 func TestHarnessCreatesEventBus(t *testing.T) {
 	h := newTestHarness(t)
 	if h.EventBus() == nil {

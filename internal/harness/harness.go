@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -222,10 +223,14 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 			defaultExts = append(defaultExts, soExt)
 		}
 	}
-	defaultExts = append(defaultExts,
-		reminders.New(todoFile.FormatReminder),
-		skillsExt,
-	)
+	defaultExts = append(defaultExts, reminders.New(todoFile.FormatReminder))
+	// Disabling load_skill turns skills off for the main agent: the
+	// extension's index fragment ("call load_skill…") would otherwise ride
+	// along on every request — tens of KB with a populated ~/.claude/skills —
+	// naming a tool the model can't call.
+	if !slices.ContainsFunc(o.disabledTools, func(n string) bool { return strings.EqualFold(n, "load_skill") }) {
+		defaultExts = append(defaultExts, skillsExt)
+	}
 	if o.budgetLimits != (budgets.Limits{}) {
 		defaultExts = append(defaultExts, budgets.New(o.budgetLimits))
 	}
@@ -407,7 +412,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	// The composite ToolPort mounts the native registry plus any extension
 	// tool sources; the loop snapshots it each turn and passes definitions
 	// per reasoning call.
-	composite, err := toolport.NewComposite(toolRegistry, allExts)
+	composite, err := toolport.NewComposite(toolRegistry, allExts, o.disabledTools...)
 	if err != nil {
 		return nil, fmt.Errorf("build tool port: %w", err)
 	}

@@ -97,7 +97,9 @@ var (
 	WithSystemOne = harness.WithSystemOne
 
 	// WithDisabledTool removes a tool by name (case-insensitive) after all
-	// registration, including built-ins like "bash" and "edit".
+	// registration, including built-ins like "bash" and "edit" and
+	// extension tools like "repl" and "load_skill". Disabling "load_skill" also
+	// drops the skills index from the main agent's system prompt.
 	WithDisabledTool = harness.WithDisabledTool
 
 	// WithSkillsDir registers an additional skills directory. Nonexistent
