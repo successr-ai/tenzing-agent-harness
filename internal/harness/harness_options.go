@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"slices"
 	"time"
 
 	"github.com/successr-ai/tenzing-agent-harness/internal/adapters/eventbus"
@@ -175,17 +176,24 @@ type harnessOptions struct {
 	// readOnly denies every tool call whose tool is not marked read-only and
 	// forces approvalTimeout to 0 (no approval prompts ever fire).
 	readOnly bool
+
+	// defaultSkillDirsDisabled drops defaultSkillDirs and defaultPluginDirs
+	// from discovery (WithDefaultSkillDirsDisabled).
+	defaultSkillDirsDisabled bool
 }
+
+// The folders skill discovery scans unless WithDefaultSkillDirsDisabled:
+// always first in skillDirs and pluginDirs.
+var (
+	defaultSkillDirs  = []string{"~/.claude/skills"}
+	defaultPluginDirs = []string{"~/.claude"}
+)
 
 func defaultHarnessOptions() *harnessOptions {
 	return &harnessOptions{
-		eventBus: eventbus.NewEventBus(),
-		skillDirs: []string{
-			"~/.claude/skills",
-		},
-		pluginDirs: []string{
-			"~/.claude",
-		},
+		eventBus:              eventbus.NewEventBus(),
+		skillDirs:             slices.Clone(defaultSkillDirs),
+		pluginDirs:            slices.Clone(defaultPluginDirs),
 		extraTools:            make(map[string]tooldef.Definition),
 		subagentMaxDepth:      1,
 		subagentMaxIterations: 100,
@@ -301,6 +309,16 @@ func WithDisabledTool(toolName string) HarnessOption {
 func WithSkillsDir(dir string) HarnessOption {
 	return func(o *harnessOptions) {
 		o.skillDirs = append(o.skillDirs, dir)
+	}
+}
+
+// WithDefaultSkillDirsDisabled stops skill discovery in the default
+// folders (~/.claude/skills, and the plugins of ~/.claude): only folders
+// given with WithSkillsDir / WithPluginsDir are scanned. For a server or
+// an eval, whose skills must not depend on the host's home directory.
+func WithDefaultSkillDirsDisabled() HarnessOption {
+	return func(o *harnessOptions) {
+		o.defaultSkillDirsDisabled = true
 	}
 }
 

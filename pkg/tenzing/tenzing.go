@@ -106,6 +106,11 @@ var (
 	// or unreadable directories are skipped at discovery time.
 	WithSkillsDir = harness.WithSkillsDir
 
+	// WithDefaultSkillDirsDisabled stops skill discovery in the default
+	// folders (~/.claude/skills and ~/.claude's plugins); only folders
+	// given with WithSkillsDir / WithPluginsDir are scanned.
+	WithDefaultSkillDirsDisabled = harness.WithDefaultSkillDirsDisabled
+
 	// WithPluginsDir registers an additional Claude config directory (the
 	// one holding settings.json and plugins/) whose enabled plugins
 	// contribute skills, namespaced "<plugin>:<skill>". Nonexistent or

@@ -80,7 +80,7 @@ If the tool needs external state (skill registry, task graph), define a narrow i
 
 ## Adding Skills
 
-1. Create `<skills-dir>/<name>/SKILL.md` with YAML frontmatter (default skills dir is `~/.claude/skills`; add more with `harness.WithSkillsDir`):
+1. Create `<skills-dir>/<name>/SKILL.md` with YAML frontmatter (default skills dir is `~/.claude/skills`, plus the plugins of `~/.claude`; add more with `harness.WithSkillsDir` / `WithPluginsDir`; `WithDefaultSkillDirsDisabled()` drops the two defaults so only explicit folders are scanned — for servers and evals, whose skills must not depend on the host's home directory):
    ```yaml
    ---
    name: skill-name

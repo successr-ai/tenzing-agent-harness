@@ -138,10 +138,14 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 
 	// build skills registry
 	skillsRegistry := skills.NewRegistry()
-	for _, skillDir := range o.skillDirs {
+	skillDirs, pluginDirs := o.skillDirs, o.pluginDirs
+	if o.defaultSkillDirsDisabled {
+		skillDirs, pluginDirs = skillDirs[len(defaultSkillDirs):], pluginDirs[len(defaultPluginDirs):]
+	}
+	for _, skillDir := range skillDirs {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
-	for _, pluginDir := range o.pluginDirs {
+	for _, pluginDir := range pluginDirs {
 		skillsRegistry.RegisterPluginDir(pluginDir)
 	}
 	skillsExt := skills.NewExt(skillsRegistry)
