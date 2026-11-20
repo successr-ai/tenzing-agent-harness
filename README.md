@@ -96,6 +96,29 @@ func main() {
 
 The same pattern serves the other roles: `WithSubagentLLM` and `WithBlackboardLLM` take any `common.LLM`; unset roles fall back to the main client. `WithAdvisorLLM` is different — it opts in to the advisor feature: a transcript-aware `advisor` tool (a stronger model that automatically sees the full conversation) plus a write-gate that requires consulting it before each turn's first state-changing tool call. Switch the main model between turns with `Harness.SetLLM(otherLLM)`.
 
+### Continue a conversation held elsewhere
+
+When an external UI owns the chat transcript, hand it to the harness with `SetHistory` before the next turn. The earlier turns reach the model as real messages, not quoted text:
+
+```go
+h, err := tenzing.New(llm, tenzing.WithSessionDisabled()) // the UI keeps the transcript
+if err != nil {
+	log.Fatal(err)
+}
+defer h.Shutdown()
+
+err = h.SetHistory([]common.Message{
+	common.NewUserMessage("What is the capital of France?"),
+	common.NewAssistantMessage("Paris."),
+})
+if err != nil {
+	log.Fatal(err) // malformed history; the live conversation is untouched
+}
+answer, err := h.RunTurn(ctx, "And its population?")
+```
+
+The history must start with a user message, end with an assistant message, and alternate between the two. Tool calls are allowed if each assistant `tool_use` is answered by a `common.RoleTool` message right after it. System messages are rejected because the harness owns the system prompt. `SetHistory` only works between turns, and it does not write the injected turns to the session record.
+
 ### One-off System One call (Jev)
 
 No harness needed. Every connection field is required — there is no default endpoint or model:

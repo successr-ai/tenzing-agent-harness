@@ -243,6 +243,8 @@ internal/
     ├── context_files.go                AGENTS.md context-file discovery (global + root-to-cwd), appended to
     │                                    the main system prompt (default-on; WithContextFilesDisabled)
     ├── gate.go                         ToolCallGate — pre-execution veto wired via WithToolCallGate
+    ├── history.go                      SetHistory — replaces the main history with a caller-supplied,
+    │                                    shape-validated transcript (external chat UIs)
     ├── prompttmpl/                     Slash-command prompt templates (*.md dirs via WithPromptTemplatesDir,
     │                                    bash-style argument substitution)
     ├── session/                        Message-level JSONL session persistence (Store/persister, List/Load/
@@ -522,6 +524,8 @@ The brain defaults to the built-in agent implementation: when no `WithAgentBuild
 `RunTurn(ctx, query)` — runs one agent turn via `RunLoop` and returns the answer. `cmd/app` drives turns over HTTP (`POST /query`) and streams progress via SSE in serve mode (default), or via a single headless `RunTurn` call in print mode (`-p`).
 
 `Steer(msg)` — queues a user message (buffer of 16; full buffer errors) for injection into the running main-agent loop at the next tool-execution boundary, after that batch's tool results are appended (so tool_use/tool_result pairing is never split). Each injection emits `SteeringInjectedEvent`. Messages queued while idle inject at the first boundary of the next turn. `LoopState()` reports the main loop FSM's current state (`started`, `stopped`, `reasoning_started`, …) so drivers can tell idle from mid-turn.
+
+`SetHistory(msgs)` (`history.go`) — replaces the main agent's history with caller-supplied `common.Message`s, so a driver whose UI owns the transcript can continue it with real messages instead of quoting past turns into the query. Between turns only (`errBusy` mid-turn). `validateHistory` first enforces the shape the context store itself records, and a rejected history leaves the live one untouched: user first, assistant last (the next `RunTurn` appends the user message), assistant alternating with `RoleUser`/`RoleTool`, every assistant `tool_use` answered by exactly the results in the `RoleTool` message right after it, no system messages, no empty messages. It then calls `contextstore.Store.Replace`, the same path `Resume` uses, but does not rotate the conversation ID or back-fill the session record — only turns run afterwards are persisted, so stateless drivers pair it with `WithSessionDisabled`.
 
 ## 9. AgentRunner (Facade)
 
